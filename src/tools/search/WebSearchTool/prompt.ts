@@ -1,0 +1,1 @@
+export const DESCRIPTION = `Search the web via Tavily API. Configure \`tavilyApiKey\` in ~/.mythinknode/config.json (free: 1,000/month at app.tavily.com). Falls back to DuckDuckGo scraping if no key configured. 12s timeout — if search times out twice, use prior knowledge instead.`;
