@@ -1,4 +1,4 @@
-# my-coder 核心保留清单
+# think-coder 核心保留清单
 
 > 重构完成后，最终保留的核心模块。
 
@@ -7,7 +7,7 @@
 ## 最终目录结构（目标）
 
 ```
-my-coder/
+think-coder/
 ├── src/
 │   ├── main.ts              # 最小入口
 │   ├── Tool.ts              # 工具接口定义

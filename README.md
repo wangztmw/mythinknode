@@ -1,104 +1,190 @@
-# my-coder
+# mythinknode
 
-Minimal AI coding agent — stripped from Claude Code, rebuilt from scratch. **~1,800 lines, 12 tools, multi-agent, zero bloat.**
+一个从 Claude Code 源码精简重构而来的**极简 AI 编码 Agent**。单进程、统一循环、信号式多 Agent 集群，加上一个跨会话的树状经验知识图（NodeMind）。
 
-## Install
+**~4,300 行 TypeScript · 13 个工具 · 零运行时依赖（除 zod）· 零遥测 · 研究级可读性。**
 
-```bash
-npm i -g my-coder
+```
+npm i -g @wangzt_mw/mythinknode
+mtn
 ```
 
-Requires Node.js ≥ 18.
+---
 
-## Configure
+## 为什么会有这个项目
 
-Set your API key via environment variable:
+Claude Code 是 50 万行的庞然大物：遥测、成本追踪、企业级云功能、多产品线耦合。这个项目把它剥到只剩骨架，证明一件事——**一个能用的编码 Agent 不需要那么复杂**。
 
-```bash
-export MYCODER_API_KEY=sk-ant-...   # Anthropic (Claude)
-# or
-export MYCODER_API_KEY=sk-...       # DeepSeek / OpenAI
+重构过程中没有删到"能跑"就停，而是在三条主线上做了独立的、可复用的创新。下面按价值排序。
+
+---
+
+## 核心创新
+
+### 1. NodeMind —— 树状经验知识图（跨会话记忆）
+
+这是整个项目最核心、也是其他编码 Agent 都没有的东西。
+
+**问题**：每次对话从零开始。Agent 不记得上次踩过的坑、跑通的路线、有效的工具组合。RAG 的解法是把答案向量化后整块喂给模型——但这会把上下文窗口塞爆，而且"喂答案"不等于"教会模型怎么用"。
+
+**解法**：不是把答案喂给 Agent，而是告诉它**答案在哪条路上**，让它自己一层层走下去。
+
+```
+~/.mythinknode/nodemind/
+└── root/
+    ├── dev-experience/        ← 父节点只知道子节点的 keywords
+    │   └── rest-auth/         ← 子节点存完整经验（内容 + attrs）
+    ├── tool-usage/
+    └── lessons/
+        └── session-20240809/  ← 每轮 session 自动沉淀的经验节点
 ```
 
-Optional: set model and provider in `~/.mycoder.json` (auto-created on first run):
+三个反直觉的设计：
+
+- **分层导航，信息散布**：父节点只存 `keywords[]`（"我跟什么有关"），不存正文。LLM 必须沿路径走——读根节点 → 决定深入哪个分支 → 读子节点 → 继续或停止。上下文永远可控。
+- **单层搜索 + Agent 驱动深入**：搜索**只查一层**，返回 `{ matches, deeperIds, deeperHints }`。深入的权利交给 Agent 自己——它用 `Knowledge(read)` 逐节点加载，觉得不够再往下走。不是系统"推"信息，是 Agent"拉"信息。这比递归多轮 LLM 路由快一个数量级，且不会一次性灌入海量文档。
+- **Remember 标记、Reflector 落盘**：Agent 循环中随时用 `Remember(action='tag')` 打 `[REMEMBER_TAG]` 标记（只入队列，不写树）；session 结束后由 **Reflector 作为树的唯一写入入口**，用 LLM 分析完整工具日志，决定"创建/更新/跳过"。写入权集中，树结构永不腐坏。
+
+**失败比成功更有价值**：反思提示词明确要求记录失败路线——"试了 X 失败，Y 也失败，Z 成功"比"Z 成功"有用十倍。每个 gotcha 按 **Symptom → Root Cause → Fix** 三段式落盘。
+
+### 2. 统一 Agent 循环 —— 一份代码驱动主 Agent 和子 Agent
+
+主 Agent 和子 Agent 在 Claude Code 里是两套不同的循环。这里合并成一份 `agentLoop()`（`src/query_loop.ts`，~220 行）。
+
+区别**全在 `AgentLoopParams` 配置里**——主 Agent 25 轮、子 Agent 10 轮；子 Agent 有 `serialTools`、有自己的 system prompt、有 `preRoundCheck` 拦截 kill/redirect 信号。同一份代码走 LLM 调用、工具执行、进度事件、token 统计。
+
+> 这意味着**修一个 bug，主 Agent 和所有子 Agent 一起修好**。没有双份代码漂移。
+
+### 3. 信号式多 Agent 集群 —— 不污染上下文窗口
+
+传统多 Agent 靠把每个子 Agent 的完整输出塞回主上下文来协调。这里是**信号制**：
+
+- 子 Agent 用 `[NEED: ...]`、`[FOUND: ...]` 标记主动向主 Agent 通信，而不是被动等召唤。
+- 主 Agent 用 `Agent(action='wait_any')` 等"任意一个完成"，`Agent(action='check')` 拉报告，`Agent(action='direct')` 注入新指令，`Agent(action='kill')` 掐掉失控的。
+- 后台 Agent 完成后只往通知队列塞一条**一句话信号**，主 Agent 需要时才去读完整报告。
+
+协调信息是**信号**，不是**内容**。上下文窗口只装结论，不装过程。
+
+### 4. Delta 上下文压缩 —— 只记录模型无法自己推导的东西
+
+每个 session 结束后，`MessageProcessor` 用 LLM 把本轮消息压缩成五段式摘要（`GOAL → TIMELINE → FINDINGS → FILES → NUMBERS`），原文存盘（`raws/S{n}.json`），精简版追加到上下文。
+
+压缩原则来自 Skill Building 方法论：
+
+- **Delta 原则**：只记模型自己推不出来的。砍掉推理噪音、原始 HTML/JSON、重复搜索结果、样板话术。
+- **失败是高价值**：每个错误记录"试了什么 → 精确报错 → 下一步换什么"。
+- **过程优于声明**：记"Write: src/auth/jwt.ts → 创建了 JWT helper"，不记"Agent 决定加认证"。
+
+### 5. CJK 双宽感知的终端渲染 —— 治本，不是打补丁
+
+中文/日文/韩文在终端占 2 列，ASCII 占 1 列。大多数 CLI 工具按"每个字符 1 列"算宽度，导致中文输出一缩窗口就复制乱码。
+
+这里三层防御，全部在渲染源头解决：
+
+1. **单通道 stdout**：所有输出走 stdout，不用 stderr，杜绝两路交错。
+2. **宽度自适应**：≥60 列用 `\r` 原地覆写（正常体验），<60 列抑制中间 tick 帧（防止 `\r`+ANSI 折行刷屏）。
+3. **CJK 双宽截断 + ANSI SGR 栈**：`charWidth()` 按码位判定双宽；折行时追踪活跃的 ANSI 格式码，断行后**重新注入**到续行——格式不丢。
+
+> 这个 bug 折腾了 7 次失败的尝试，最终根因是 **ANSI 转义序列被物理截断跨行边界**导致状态机损坏。修复方式不是事后 patch，而是从渲染源头重构。
+
+### 6. LLM 网络可靠性 —— 学自 Claude Code 的生产级重试
+
+`src/llm/retry.ts` 实现了从 Claude Code 源码里提炼的重试策略：
+
+- **瞬态错误重试 10 次**，永久错误（DNS/鉴权）立即失败并给明确提示。
+- **指数退避 + 25% jitter**（防惊群），优先读 `retry-after` 响应头（服务器最清楚该等多久）。
+- **ECONNRESET → 下次请求禁用 keep-alive**（避免复用死连接）。
+- **529 / overloaded 识别**（服务过载，值得重试）。
+- **并发信号量**：主 Agent + 所有子 Agent 共享一个计数器（默认 2），超出排队 FIFO，120s 超时兜底——防止多 Agent 同时轰炸 API 触发 429。
+
+---
+
+## 架构
+
+```
+src/
+├── Mythinknode.ts          入口：配置 → LLM → 工具 → 引擎 → REPL
+├── session_loop.ts         Session 循环：前置检索 → agentLoop → 反思 → 压缩
+├── query_loop.ts           统一 Agent 循环（主/子 Agent 共用）
+├── agent/
+│   └── agent_def.ts        引擎：系统提示词 + Agent 状态表 + 子 Agent 提示词
+├── cli/
+│   ├── cli.ts              REPL + 统一 stdout 渲染（宽度自适应）
+│   ├── config.ts           配置持久化（~/.mythinknode/）
+│   ├── render/             Markdown→ANSI（CJK 双宽）+ 折行保护
+│   └── monitor/            ProgressEvent 事件合同 + 轮询
+├── llm/                    双 Provider（Anthropic + OpenAI/DeepSeek）+ 重试 + 并发
+├── session/                会话持久化 + 消息压缩（MessageProcessor）
+├── nodemind/               树状经验图：Store / Navigator / Reflector
+└── tools/                  13 个工具
+    ├── core/               Tool 接口 + buildTool 工厂
+    ├── agent/              Agent（spawn/check/wait_any/direct/kill）
+    ├── file/               Read / Write / Edit / Glob / Grep
+    ├── exec/               Bash
+    ├── search/             WebSearch（Tavily）/ WebFetch
+    ├── external/           MCP / Skill
+    └── nodemind/           Knowledge（search/read/browse）/ Remember（tag）
+```
+
+**一次 Session 的完整管线**：
+
+```
+CLI 输入 → Session 管理 → NodeMind 前置检索 → Agent 循环（LLM + 工具）
+    → NodeMind 后置反思 → MessageProcessor 压缩 → CLI 渲染 → 持久化
+```
+
+7 个模块各守一段管线，通过 `session_loop.ts` 串联。模块内部自由，模块间只有一种耦合：**数据进、数据出**。
+
+---
+
+## 快速开始
+
+```bash
+# 安装
+npm i -g @wangzt_mw/mythinknode
+
+# 设置 API key（DeepSeek / OpenAI / Anthropic）
+export MYTHINKNODE_API_KEY=sk-...        # sk- 开头自动识别 OpenAI/DeepSeek
+export MYTHINKNODE_API_KEY=sk-ant-...    # sk-ant- 开头自动识别 Anthropic
+
+# 启动
+mtn                                        # 或: mythinknode
+```
+
+### 配置
+
+可选的 `~/.mythinknode/config.json`（首次运行自动创建）：
 
 ```json
 {
   "model": "deepseek-chat",
   "provider": "openai",
-  "openaiBase": "https://api.deepseek.com"
+  "openaiBase": "https://api.deepseek.com",
+  "tavilyApiKey": "tvly-..." 
 }
 ```
 
-User memory: write personal preferences to `~/.mycoder/MYCODER.md` — automatically injected into every session.
+用户记忆：写入 `~/.mythinknode/MYTHINKNODE.md`，每次 session 自动注入。
 
-## Usage
+### 命令
 
-```bash
-mycoder
-```
+| 输入 | 作用 |
+|------|------|
+| `/help` | 列出工具 |
+| `/exit` / `/quit` | 退出（自动保存 + 生成会话标题） |
+| `--resume` | 恢复上次会话 |
+| 其他 | 发给 AI |
 
-```
-my-coder v0.4.0
-Provider: openai  |  Model: deepseek-chat  |  Tools: 12
-Config: ~/.mycoder.json  |  Memory: ~/.mycoder/MYCODER.md
+---
 
-mycoder >>> What is 2+2?
-
-2 + 2 = 4
-
-mycoder >>> /exit
-Bye.
-```
-
-### Commands
-
-| Command | Action |
-|---------|--------|
-| `/help` | List all tools |
-| `/exit` or `/quit` | Quit |
-| Any other input | Sent to the AI agent |
-
-### Tools (12 total)
-
-**Code**: `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`
-**Web**: `WebSearch`, `WebFetch`
-**AI**: `Agent` (parallel sub-agents), `Task` (lifecycle management)
-**Extension**: `MCP`, `Skill` (stubs for future use)
-
-### Multi-agent
-
-```bash
-# Spawn parallel sub-agents for research, code review, etc.
-mycoder >>> Use Agent to research topic A, topic B, topic C in parallel, then summarize
-```
-
-## Development
+## 开发
 
 ```bash
 git clone https://github.com/wangztmw/my-coder.git
 cd my-coder
 npm install
-npm run build
-MYCODER_API_KEY=sk-... node dist/Mycoder.js
-```
-
-## Architecture
-
-```
-src/
-├── Mycoder.ts         65行  入口：检测配置 → 连线 → 启动
-├── cli.ts             60行  REPL 循环 + EOF 优雅退出
-├── agent.ts          294行  核心引擎（主Agent + 子Agent）
-├── config.ts         120行  配置持久化（~/.mycoder.json）
-├── task.ts            46行  Task 生命周期
-├── ansi.ts            56行  Markdown→ANSI 终端渲染
-├── provider.ts        41行  Provider 检测
-├── llm/
-│   ├── types.ts       38行  统一 LLMProvider 接口
-│   ├── anthropic.ts   53行  Anthropic 实现
-│   └── openai.ts     100行  OpenAI/DeepSeek 实现
-└── tools-v2/              12 个原生工具
+npm run build        # tsc 编译到 dist/
+npm run dev          # tsx 直接跑源码
 ```
 
 ## License

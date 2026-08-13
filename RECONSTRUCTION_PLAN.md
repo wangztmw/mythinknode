@@ -1,4 +1,4 @@
-# my-coder：Claude Code 源码重构计划
+# think-coder：Claude Code 源码重构计划
 
 > **创建时间**：2026-08-01
 > **核心关键词**：Claude Code重构、源码瘦身、去遥测、独立运行、分阶段
@@ -21,11 +21,11 @@
 
 ### Phase 0：建立基线（当前）
 
-**目标**：复制完整源码到 my-coder，确保原始可构建，建立变更追踪。
+**目标**：复制完整源码到 think-coder，确保原始可构建，建立变更追踪。
 
 **动作**：
-- [ ] `cp -r study/claude-code/claude-code-main/* my-coder/`
-- [ ] `cd my-coder && npm install` 验证原始可构建
+- [ ] `cp -r study/claude-code/claude-code-main/* think-coder/`
+- [ ] `cd think-coder && npm install` 验证原始可构建
 - [ ] 创建 `CHANGES.md` 记录所有删除和修改
 - [ ] Git init + 初始 commit（保留原始基线）
 
@@ -155,15 +155,15 @@
 
 ### Phase 6：重构入口和依赖（目标：最终 ~50K 行）
 
-**目标**：让 my-coder 成为一个可独立构建、可运行的项目。
+**目标**：让 think-coder 成为一个可独立构建、可运行的项目。
 
 **动作**：
-- [ ] 创建 `my-coder/package.json`（从零写，只包含必需依赖）
-- [ ] 创建 `my-coder/src/main.ts` — 最小入口
+- [ ] 创建 `think-coder/package.json`（从零写，只包含必需依赖）
+- [ ] 创建 `think-coder/src/main.ts` — 最小入口
 - [ ] 修复所有编译错误
 - [ ] 移除 TypeScript strict 导致的兼容性问题
 - [ ] 验证 `npm run build && node dist/main.js` 可运行
-- [ ] 端到端测试：`my-coder "ls"` 能执行并返回结果
+- [ ] 端到端测试：`think-coder "ls"` 能执行并返回结果
 
 ### Phase 7：精简记忆/技能系统
 
@@ -179,7 +179,7 @@
 ## 需要创建的追踪文件
 
 ```
-my-coder/
+think-coder/
 ├── RECONSTRUCTION_PLAN.md    ← 本文件
 ├── CHANGES.md                ← 每次删除/修改的记录
 ├── CORE_KEPT.md              ← 保留的核心模块清单

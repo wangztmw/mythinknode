@@ -1,16 +1,16 @@
 {
-  "name": "@wangzt_mw/my-coder",
+  "name": "@wangzt_mw/mythinknode",
   "version": "0.6.0",
-  "description": "Minimal AI coding agent — stripped, independent, research-grade",
+  "description": "Minimal AI coding agent with multi-agent cluster — stripped, independent, research-grade",
   "type": "module",
-  "main": "dist/Mycoder.js",
-  "bin": { "mycoder": "bin/mycoder.js" },
+  "main": "dist/Mythinknode.js",
+  "bin": { "mythinknode": "bin/mythinknode.js", "mtn": "bin/mtn.js" },
   "files": ["dist/", "bin/", "README.md"],
   "engines": { "node": ">=18" },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/Mycoder.js",
-    "dev": "npx tsx src/Mycoder.ts"
+    "start": "node dist/Mythinknode.js",
+    "dev": "npx tsx src/Mythinknode.ts"
   },
   "dependencies": {
     "zod": "~4.4.0"

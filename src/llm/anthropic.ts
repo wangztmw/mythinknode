@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod/v4';
-import type { Tools } from '../tools-v2/core/Tool.js';
+import type { Tools } from '../tools/core/Tool.js';
 import type { LLMProvider, ChatMessage, LLMResponse } from './types.js';
 import { fetchWithRetry } from './retry.js';
 

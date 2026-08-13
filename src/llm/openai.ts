@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod/v4';
-import type { Tools } from '../tools-v2/core/Tool.js';
+import type { Tools } from '../tools/core/Tool.js';
 import type { LLMProvider, ChatMessage, LLMResponse } from './types.js';
 import { fetchWithRetry } from './retry.js';
 
@@ -83,7 +83,7 @@ export const openaiProvider: LLMProvider = {
     const choice = (d.choices as Array<Record<string, unknown>>)?.[0];
     const msg = choice?.message as Record<string, unknown> | undefined;
 
-    if (!msg) return { content: [], stop_reason: 'end_turn' };
+    if (!msg) throw new Error('API response missing message field — refusing to create empty assistant message');
 
     const content: Array<unknown> = [];
     if (msg.content) content.push({ type: 'text', text: msg.content });
@@ -98,9 +98,11 @@ export const openaiProvider: LLMProvider = {
         });
       }
     }
+    const u = d.usage as Record<string, number> | undefined;
     return {
       content,
       stop_reason: (choice.finish_reason as string) === 'tool_calls' ? 'tool_use' : 'end_turn',
+      usage: u ? { input_tokens: u.prompt_tokens, output_tokens: u.completion_tokens } : undefined,
     };
   },
 };

@@ -1,179 +1,149 @@
 /**
- * 统一 Agent 循环 — agentLoop() 一份代码驱动主Agent和子Agent
+ * Session 循环 — 每次用户输入触发一次完整管线：
+ *   flush通知 → NodeMind前置检索 → agentLoop → post-loop guard → NodeMind反思 → 压缩
  *
- * agent_def.ts 包含引擎完整定义。本文件提供唯一的执行循环。
- * 主Agent 和子Agent 的区别全在 AgentLoopParams 配置中。
+ * 只管业务逻辑，不碰终端渲染。渲染在 cli/cli.ts。
+ * 所有 pipeline 组件（MessageProcessor, NodeMind）都在模块内自管理。
  */
-import { AgentEngine, type ProgressEvent, type AgentResult } from './agent_def.js';
-import type { ChatMessage } from './llm/types.js';
-import type { LoopResult, AgentMeta } from './task_tree/types.js';
+import { AgentEngine } from './agent/agent_def.js';
+import { Session } from './session/session_manage.js';
+import { MessageProcessor } from './session/message-processor.js';
+import { agentLoop } from './query_loop.js';
+import { NodeMindStore } from './nodemind/nodeMind_manage.js';
+import { NodeMindPreNavigator } from './nodemind/preNavigator.js';
+import { NodeMindReflector } from './nodemind/reflector.js';
+import { flushPendingNotes, formatPendingNotes } from './tools/nodemind/RememberTool/RememberTool.js';
 
-// ---- 参数接口 ----
+// ---- 模块级 pipeline 组件（惰性初始化） ----
 
-export interface AgentLoopParams {
-  messages: ChatMessage[];
-  maxRounds: number;
-  onProgress?: (e: ProgressEvent) => void;
-  onTurnComplete?: (messages: ChatMessage[], toolCount: number) => void;
-  onComplete?: (text: string) => void;
-  preRoundCheck?: (messages: ChatMessage[]) => string | null;
-  updateStats?: (name: string, summary: string, output: string, feedback?: string) => void;
-  phaseLabel?: (i: number, lastMsg: unknown) => string;
-  /** 工具执行模式：true=串行(子Agent)，默认false=并行(主Agent) */
-  serialTools?: boolean;
-  /** 当前 Agent 的树角色元数据（任务树系统注入） */
-  agentMeta?: AgentMeta;
-  /** 文件操作追踪 hook（任务树系统注入） */
-  fileTracker?: (toolName: string, input: Record<string, unknown>) => void;
+let _processor: MessageProcessor | null = null;
+let _processorSessionId: string | null = null;
+
+let _nodemind: { navigator: NodeMindPreNavigator; reflector: NodeMindReflector } | null = null;
+
+function getProcessor(llm: { chat: any }, sessionId: string): MessageProcessor {
+  if (_processor && _processorSessionId === sessionId) return _processor;
+  _processor = new MessageProcessor(llm, sessionId);
+  _processorSessionId = sessionId;
+  return _processor;
 }
 
-// ---- 辅助函数 ----
-
-function extractText(response: any): string {
-  return (response.content as Array<{ type: string; text?: string }>)
-    .filter(b => b.type === 'text').map(b => b.text || '').join('\n');
+function getNodeMind(): { navigator: NodeMindPreNavigator; reflector: NodeMindReflector } {
+  if (!_nodemind) {
+    const store = NodeMindStore.init();
+    _nodemind = {
+      navigator: new NodeMindPreNavigator(store),
+      reflector: new NodeMindReflector(store),
+    };
+  }
+  return _nodemind;
 }
 
-function countToolUses(response: any): number {
-  return (response.content as Array<{ type: string }>)
-    .filter(b => b.type === 'tool_use').length;
-}
+// ---- 跨轮次状态 ----
 
-function extractThoughts(response: any): string {
-  return (response.content as Array<{ type: string; text?: string }>)
-    .filter(b => b.type === 'text').map(b => b.text || '').join(' ').trim();
-}
+/** 记录当前逻辑任务的起点。max_rounds 后"继续"时复用 */
+let taskStartLen = -1;
 
-async function executeTools(
+// ---- 主入口 ----
+
+export async function runSession(
   engine: AgentEngine,
-  response: any,
-  onProgress?: (e: ProgressEvent) => void,
-  updateStats?: (name: string, summary: string, output: string) => void,
-  serial?: boolean,
-  fileTracker?: (toolName: string, input: Record<string, unknown>) => void,
-): Promise<Array<{ name: string; id: string; input: Record<string, unknown>; output: string }>> {
-  const toolUses = (response.content as any[])
-    .filter((b: any) => b.type === 'tool_use' && b.name && b.id);
-  const toolMap = (engine as any).toolMap;
-  const toolContext = (engine as any).toolContext;
+  session: Session,
+  userInput: string,
+): Promise<{ text: string; ms: number; inputTokens: number; outputTokens: number }> {
+  const startTime = Date.now();
+  const nodemind = getNodeMind();
+  const processor = getProcessor(engine.llm, session.id);
 
-  const executeOne = async (b: any) => {
-    // ★ 文件追踪 hook
-    if (fileTracker) fileTracker(b.name!, b.input || {});
-    const tool = toolMap.get(b.name!);
-    let output = '';
-    if (tool) {
-      try {
-        const r = await tool.call(b.input || {}, toolContext);
-        output = typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
-      } catch (e) { output = `Error: ${(e as Error).message}`; }
-    } else { output = `Unknown tool: ${b.name}`; }
-    if (updateStats) {
-      const summary = tool?.getToolUseSummary?.(b.input || {}) || b.name!;
-      updateStats(b.name!, summary, output);
+  engine.events.length = 0;
+  session.flushNotifications();
+  session.addMessage({ role: 'user', content: userInput });
+
+  const currentLen = session.messages.length;
+  if (taskStartLen < 0) taskStartLen = currentLen;
+
+  // ★ Pre-query: NodeMind 检索相关知识并注入上下文
+  try {
+    const knowledge = await nodemind.navigator.search(userInput, engine.llm);
+    if (knowledge) {
+      session.addMessage({
+        role: 'user',
+        content: `[NODE MIND — relevant past experience]\n${knowledge}\n\nUse Knowledge(action='search') to explore deeper, or Knowledge(action='browse') to see available topics.`
+      });
     }
-    return { name: b.name!, id: b.id!, input: b.input || {}, output };
-  };
+  } catch (e) { console.error('[NodeMind] PreNavigator failed:', (e as Error).message); }
 
-  // 主Agent: Promise.all并行。子Agent: reduce串行(子Agent工具间可能有数据依赖)
-  const calls = serial
-    ? await toolUses.reduce(async (prev, b) => {
-        const acc = await prev;
-        acc.push(await executeOne(b));
-        return acc;
-      }, Promise.resolve([] as any[]))
-    : await Promise.all(toolUses.map(executeOne));
+  let loopResult = await agentLoop(engine, {
+    messages: session.messages,
+    maxRounds: 25,
+    onTurnComplete: (_msgs, tc) => { session.toolCount += tc; },
 
-  if (onProgress) {
-    onProgress({ type: 'tool_display', calls: (engine as any).mergeToolCalls(calls) });
+    phaseLabel: (i, lastMsg) => i === 0 ? 'analyzing' :
+      typeof lastMsg === 'string' && lastMsg.length < 200 ? 'continuing' : 'reviewing results',
+    preRoundCheck: () => {
+      if (session.pendingNotifications.length > 0) session.flushNotifications();
+      return null;
+    },
+  });
+
+  // Post-loop guard: 等后台 Agent 跑完，flush 信号通知
+  const runningAfter = [...engine.team.values()].filter(m => m.status === 'running');
+  if (runningAfter.length > 0) {
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      const still = [...engine.team.values()].filter(m => m.status === 'running');
+      if (still.length === 0) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    session.flushNotifications();
+    const done = [...engine.team.values()].filter(m => m.status !== 'running');
+    if (done.length > 0) {
+      const signals = done.map(m =>
+        `[Agent "${m.subject}" ${m.status}. Use Agent(action='check', taskId='${m.id}').]`
+      ).join('\n');
+      session.addMessage({ role: 'user', content: signals });
+      loopResult = await agentLoop(engine, {
+        messages: session.messages,
+        maxRounds: 8,
+        phaseLabel: () => 'summarizing agent results',
+        preRoundCheck: () => { session.flushNotifications(); return null; },
+      });
+    }
   }
-  return calls;
-}
 
-function pushResults(
-  messages: ChatMessage[],
-  engine: AgentEngine,
-  toolCalls: Array<{ id: string; output: string }>,
-): void {
-  const provider = (engine as any).provider;
-  const toolResults: Array<unknown> = [];
-  for (const c of toolCalls) toolResults.push(provider.formatToolResult(c.id, c.output));
-  if (provider.name === 'openai') {
-    for (const tr of toolResults) messages.push(tr as ChatMessage);
-  } else {
-    messages.push({ role: 'user', content: toolResults });
+  // tokenMarkers
+  const sessTokens = loopResult.inputTokens + loopResult.outputTokens;
+  if (sessTokens > 0) {
+    session.cumulativeTokens += sessTokens;
+    session.tokenMarkers.push(session.cumulativeTokens);
   }
-}
 
-// ---- 统一循环 ----
-
-export async function agentLoop(
-  engine: AgentEngine,
-  params: AgentLoopParams,
-): Promise<LoopResult> {
-  const { messages, maxRounds, onProgress, onTurnComplete, onComplete,
-          preRoundCheck, updateStats, phaseLabel, serialTools, fileTracker } = params;
-
-  for (let i = 0; i < maxRounds; i++) {
-    if (preRoundCheck) {
-      const signal = preRoundCheck(messages);
-      if (signal) {
-        // ★ 硬 break：blocked 信号不依赖 LLM 理解文本
-        if (signal.startsWith('BLOCKED:') || signal.startsWith('blocked:')) {
-          const reason = signal.replace(/^BLOCKED:\s*/i, '');
-          onComplete?.('(blocked)');
-          return { status: 'blocked', text: `(blocked: ${reason})`, blockedReason: reason, roundCount: i + 1 };
-        }
-        // kill 信号
-        if (signal === '(killed)' || signal.startsWith('killed')) {
-          onComplete?.('(killed)');
-          return { status: 'killed', text: signal, roundCount: i + 1 };
-        }
-        // 其他信号：注入 messages 让 LLM 处理（兼容旧行为）
-        messages.push({ role: 'user', content: `[SIGNAL] ${signal}` });
-      }
+  // ★ Post-query: NodeMind 反思（在压缩之前！分析原文并维护经验树）
+  if (loopResult.status === 'success') {
+    // 先 flush Remember 标签到消息流
+    const notes = flushPendingNotes();
+    if (notes.length > 0) {
+      session.addMessage({ role: 'user', content: formatPendingNotes(notes) });
     }
 
-    const lastMsg = messages[messages.length - 1]?.content;
-    const phase = phaseLabel?.(i, lastMsg) ?? 'processing';
-
-    let response: { content: Array<unknown>; stop_reason: string };
     try {
-      response = await (engine as any).callLLM(messages, phase, onProgress);
-    } catch (e) {
-      const errMsg = (e as Error).message || String(e);
-      return { status: 'crashed', text: `LLM call failed: ${errMsg}`, roundCount: i + 1 };
+      await nodemind.reflector.reflect(session.messages, loopResult, engine.llm);
+    } catch (e) { console.error('[NodeMind] Reflector failed:', (e as Error).message); }
+
+    // MessageProcessor: 压缩（在反思之后）
+    const start = taskStartLen > 0 ? taskStartLen : currentLen;
+    const delta = session.messages.slice(start);
+    const result = await processor.process(delta);
+    if (result) {
+      session.messages = [...session.messages.slice(0, start), ...result.compressed];
     }
-
-    if (response.stop_reason === 'end_turn') {
-      messages.push({ role: 'assistant', content: response.content });
-      const text = extractText(response);
-      const tc = countToolUses(response);
-      onTurnComplete?.(messages, tc);
-      onComplete?.(text);
-      return { status: 'success', text: text || '(done)', roundCount: i + 1 };
-    }
-
-    if (response.stop_reason === 'tool_use') {
-      const thoughts = extractThoughts(response);
-      if (thoughts && onProgress) onProgress({ type: 'thought', text: thoughts });
-      messages.push({ role: 'assistant', content: response.content });
-
-      // 提取反馈标记: [FEEDBACK: xxx] 或 [BLOCKED: xxx]
-      let feedback: string | undefined;
-      if (thoughts) {
-        const fm = thoughts.match(/\[FEEDBACK:\s*(.+?)\]/);
-        const bm = thoughts.match(/\[BLOCKED:\s*(.+?)\]/);
-        if (bm) feedback = `BLOCKED: ${bm[1]}`;
-        else if (fm) feedback = fm[1];
-      }
-
-      const toolResults = await executeTools(engine, response, onProgress,
-        feedback ? (n, s, o) => updateStats?.(n, s, o, feedback!) : updateStats, serialTools, fileTracker);
-      pushResults(messages, engine, toolResults);
-    } else {
-      return { status: 'crashed', text: `Unexpected stop_reason: ${response.stop_reason}`, roundCount: i + 1 };
-    }
+    taskStartLen = -1;
   }
-  return { status: 'max_rounds', text: '(max iterations)', roundCount: maxRounds };
+
+  return {
+    text: loopResult.text,
+    ms: Date.now() - startTime,
+    inputTokens: loopResult.inputTokens,
+    outputTokens: loopResult.outputTokens,
+  };
 }

@@ -19,7 +19,7 @@
 
 | 项目 | 内容 | 文件 |
 |------|------|------|
-| — | **锦上添花**：断连信号修复（9 断开 + 7 部分 = 16 项） | [plan-jin-shang-tian-hua.md](plan-jin-shang-tian-hua.md) |
+| — | **锦上添花**：断连信号修复（9 断开 + 7 部分 = 16 项） | [20260806-1315-plan-jin-shang-tian-hua.md](20260806-1315-plan-jin-shang-tian-hua.md) |
 
 ## 待实施
 

@@ -79,7 +79,7 @@ export const openaiProvider = {
         const choice = d.choices?.[0];
         const msg = choice?.message;
         if (!msg)
-            return { content: [], stop_reason: 'end_turn' };
+            throw new Error('API response missing message field — refusing to create empty assistant message');
         const content = [];
         if (msg.content)
             content.push({ type: 'text', text: msg.content });
@@ -94,9 +94,11 @@ export const openaiProvider = {
                 });
             }
         }
+        const u = d.usage;
         return {
             content,
             stop_reason: choice.finish_reason === 'tool_calls' ? 'tool_use' : 'end_turn',
+            usage: u ? { input_tokens: u.prompt_tokens, output_tokens: u.completion_tokens } : undefined,
         };
     },
 };

@@ -1,11 +1,8 @@
 /**
- * LLM Provider 统一接口
- * 屏蔽 Anthropic vs OpenAI/DeepSeek 的消息格式差异
+ * LLM 接口
+ * 外部（AgentEngine）只依赖 LLMClient
  */
-
-import type { Tools } from '../tools-v2/core/Tool.js';
-
-// ---- 通用类型 ----
+import type { Tools } from '../tools/core/Tool.js';
 
 export interface ChatMessage {
   role: string;
@@ -15,24 +12,20 @@ export interface ChatMessage {
 export interface LLMResponse {
   content: Array<unknown>;
   stop_reason: string;
+  usage?: { input_tokens: number; output_tokens: number };
 }
 
-// ---- Provider 接口 ----
-
-export interface LLMProvider {
-  /** 提供商名称 */
-  name: string;
-  /** 格式化工具定义为 API 接受的格式 */
-  formatTools(tools: Tools): unknown[];
-  /** 格式化工具结果为 API 消息格式 */
+/** Agent 使用的简洁接口 */
+export interface LLMClient {
+  chat(messages: ChatMessage[], systemPrompt?: string): Promise<LLMResponse>;
   formatToolResult(toolCallId: string, output: string): ChatMessage;
-  /** 调用 LLM API */
-  call(
-    systemPrompt: string,
-    messages: ChatMessage[],
-    apiKey: string,
-    model: string,
-    tools: unknown[],
-    openaiBase?: string,
-  ): Promise<LLMResponse>;
+  lastUsage?: { input_tokens: number; output_tokens: number };
+}
+
+/** LLM 模块内部接口（anthropic.ts/openai.ts 实现此接口） */
+export interface LLMProvider {
+  name: string;
+  formatTools(tools: Tools): unknown[];
+  formatToolResult(toolCallId: string, output: string): ChatMessage;
+  call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string): Promise<LLMResponse>;
 }
