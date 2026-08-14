@@ -128,6 +128,10 @@ export const AgentTool = buildTool({
       maxRounds: 10,
       serialTools: true as const,
       systemPrompt: SUB_AGENT_PROMPT,
+      silent: true,
+      onRound: (i: number) => {
+        if (member.agentLoop) member.agentLoop.roundCount = i + 1;
+      },
       preRoundCheck: (_msgs: ChatMessage[]) => {
         if (member.status === 'blocked') return `BLOCKED: ${member.feedback || 'no reason'}`;
         if (member.pendingInstruction) {
@@ -143,6 +147,7 @@ export const AgentTool = buildTool({
       },
       updateStats: (name: string, summary: string, output: string, feedback?: string) => {
         if (member.agentLoop) {
+          member.agentLoop.toolUseCount++;
           member.agentLoop.lastActivity = `${name}(${summary})`;
           member.agentLoop.lastOutput = output.slice(0, 200);
         }
@@ -161,7 +166,15 @@ export const AgentTool = buildTool({
       await new Promise(r => setTimeout(r, Math.random() * 500));
       agentLoop(engine, subConfig).then(result => {
         if (result.status === 'success') {
-          engine.completeMember(member.id, result.text);
+          const blocked = result.text.match(/\[BLOCKED:\s*(.+?)\]/);
+          if (blocked) {
+            member.status = 'blocked';
+            member.feedback = `BLOCKED: ${blocked[1]}`;
+            member.endTime = Date.now();
+            member.output = result.text;
+          } else {
+            engine.completeMember(member.id, result.text);
+          }
         } else {
           // 保留 preRoundCheck 已经设置的 killed——不要覆盖
           if (member.status !== 'killed') {
@@ -187,7 +200,15 @@ export const AgentTool = buildTool({
     try {
       const result = await agentLoop(engine, subConfig);
       if (result.status === 'success') {
-        engine.completeMember(member.id, result.text);
+        const blocked = result.text.match(/\[BLOCKED:\s*(.+?)\]/);
+        if (blocked) {
+          member.status = 'blocked';
+          member.feedback = `BLOCKED: ${blocked[1]}`;
+          member.endTime = Date.now();
+          member.output = result.text;
+        } else {
+          engine.completeMember(member.id, result.text);
+        }
       } else {
         if (member.status !== 'killed') {
           member.status = result.status === 'blocked' ? 'blocked' : 'failed';
@@ -196,7 +217,7 @@ export const AgentTool = buildTool({
         member.output = `[${result.status}] ${result.text}`;
         if (result.blockedReason) member.feedback = result.blockedReason;
       }
-      return { data: `[Agent "${input.description}" ${result.status === 'success' ? 'report' : result.status}]:\n${result.text}` };
+      return { data: `[Agent "${input.description}" ${member.status === 'blocked' ? 'blocked' : result.status === 'success' ? 'report' : result.status}]:\n${result.text}` };
     } catch (e) {
       member.status = 'failed';
       member.endTime = Date.now();

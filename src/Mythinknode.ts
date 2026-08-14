@@ -108,15 +108,21 @@ async function main() {
 
     cli.setBusy(true);
     const stopRender = cli.startRender(engine);
+    let result: Awaited<ReturnType<typeof runSession>>;
     try {
-      const result = await runSession(engine, session, line);
-      cli.renderResult(result.text, result.ms, result.inputTokens, result.outputTokens);
+      result = await runSession(engine, session, line);
     } catch (e) {
-      cli.renderError((e as Error).message || String(e));
-    } finally {
       stopRender();
       cli.setBusy(false);
+      cli.renderError((e as Error).message || String(e));
+      session.save();
+      continue;
     }
+    // 先停渲染，再输出结果 —— 否则 pollEvents 定时器还会消费队列里残留的
+    // thinking_end/tool_display 事件，把 `\r ● Thinking...` 插进结果和 prompt 之间，导致输入口错乱。
+    stopRender();
+    cli.renderResult(result.text, result.ms, result.inputTokens, result.outputTokens);
+    cli.setBusy(false);
     session.save();
   }
 }

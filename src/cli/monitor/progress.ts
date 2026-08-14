@@ -26,7 +26,7 @@ export type ProgressEvent =
   | { type: 'thought'; text: string }
   | { type: 'error'; message: string };
 
-/** 启动事件轮询。每 80ms 消费事件队列，tick 类型只取最后一条（防止 \r 刷新过于密集导致 Terminal 崩溃）。返回 stop 函数。 */
+/** 启动事件轮询。每 1s 消费事件队列（对齐 Claude Code 节奏），tick 类型只取最后一条（防止 \r 刷新过于密集导致 Terminal 崩溃）。返回 stop 函数。 */
 export function pollEvents(engine: { events: Array<{ type: string; [key: string]: unknown }> }, render: (e: ProgressEvent) => void): () => void {
   const timer = setInterval(() => {
     let lastTick: ProgressEvent | null = null;
@@ -39,6 +39,6 @@ export function pollEvents(engine: { events: Array<{ type: string; [key: string]
       try { render(e); } catch { /* 渲染不应崩 */ }
     }
     if (lastTick) try { render(lastTick); } catch { /* 渲染不应崩 */ }
-  }, 80);
+  }, 1000);
   return () => clearInterval(timer);
 }

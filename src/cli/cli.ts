@@ -13,6 +13,9 @@ import { safeWrite, displayWidth } from './render/term-wrap.js';
 
 const THINKING_PHASES = new Set(['analyzing', 'continuing', 'reviewing results', 'summarizing agent results', 'processing']);
 
+// 每次 runSession 的第一个 thinking 不换行（紧接用户输入行），后续 thinking 才换行
+let isFirstThinking = true;
+
 // ---- 渲染 ----
 
 /** CJK 双宽感知截断 */
@@ -43,7 +46,9 @@ function renderProgress(event: ProgressEvent): void {
     switch (event.type) {
       case 'thinking_start': {
         const name = phaseLabel(event.label);
-        process.stdout.write(`\n  ● ${B}${name}${b} (0.0s) — ${trunc(event.label, cols - 25)}\x1b[K`);
+        const pfx = isFirstThinking ? '' : '\n';
+        isFirstThinking = false;
+        process.stdout.write(`${pfx}  ● ${B}${name}${b} (0.0s) — ${trunc(event.label, cols - 25)}\x1b[K`);
         break;
       }
       case 'thinking_tick': {
@@ -95,30 +100,42 @@ function renderMergedTools(merged: MergedTool[], elapsedMs?: number): void {
 // ---- REPL ----
 
 export function createCLI() {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // terminal: false = 不进 raw mode，终端在 canonical mode 下自己 echo + 行缓冲 + 处理退格。
+  // 超长单行由终端缓冲，程序只在回车后一次性收到整行（O(1)，无逐字符回显重绘 = 治本）。
+  // 彻底绕开 readline terminal 模式的 _refreshLine 逐字符重绘路径（卡死 + resize 幽灵提示符的根源）。
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
   const PROMPT = `${C}${B}mythinknode${b}${c} ${B}>>>${b} `;
-  rl.setPrompt(PROMPT);
 
   let resolveLine: ((value: string) => void) | null = null;
-  let drainTimer: ReturnType<typeof setInterval> | null = null;
+  let lineBuffer: string[] = [];
+  let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const settle = () => {
+    if (!resolveLine) return;
+    const text = lineBuffer.join('\n').trim();
+    lineBuffer = [];
+    if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+    const resolve = resolveLine;
+    resolveLine = null;
+    resolve(text);
+  };
 
   rl.on('line', (line: string) => {
-    if (resolveLine) {
-      resolveLine(line.trim());
-      resolveLine = null;
-    }
+    if (!resolveLine) return;
+    lineBuffer.push(line);
+    // 规则1：连续两次 \n（空行）= 输入结束
+    if (line.trim() === '') { settle(); return; }
+    // 规则2：\n 后无文本（debounce 150ms）= 输入结束
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = setTimeout(settle, 150);
   });
 
   return {
     setBusy(busy: boolean): void {
       if (busy) {
         rl.pause();
-        process.stdout.write('\n');
-        drainTimer = setInterval(() => {
-          while (process.stdin.read() !== null) { /* drain IME */ }
-        }, 100);
       } else {
-        if (drainTimer) { clearInterval(drainTimer); drainTimer = null; }
+        if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
         rl.resume();
       }
     },
@@ -126,7 +143,9 @@ export function createCLI() {
     readLine(): Promise<string> {
       return new Promise(resolve => {
         resolveLine = resolve;
-        rl.prompt();
+        lineBuffer = [];
+        // terminal: false 下 rl.prompt() 不输出，手动写 prompt
+        process.stdout.write(PROMPT);
       });
     },
 
@@ -141,6 +160,7 @@ export function createCLI() {
     },
 
     startRender(engine: { events: Array<{ type: string; [key: string]: unknown }> }): () => void {
+      isFirstThinking = true;  // 每次新查询，重置"第一个 thinking 不换行"标志
       return pollEvents(engine, renderProgress);
     },
 

@@ -3,7 +3,7 @@
  *
  * 瞬态错误（网络抖动/服务端临时故障）→ 重试 10 次
  * 永久错误（DNS 失败/鉴权失败）→ 立即失败，给出明确提示
- * ★ 学自 Claude Code: 退避加 jitter、retry-after 头、ECONNRESET→禁用 keep-alive、529 识别
+ * 退避加 jitter、retry-after 头、ECONNRESET→禁用 keep-alive、529 识别
  */
 
 /** 判断是否值得重试 */
@@ -24,7 +24,7 @@ export function isRetryable(err: Error): boolean {
 
 /**
  * 带重试和超时的 fetch。
- * - 单次请求超时 120s（学自 Claude Code: 非流式 300s，我们折中 120s）
+ * - 单次请求超时 120s
  * - 退避: 指数 + 25% jitter（防惊群）+ 优先 retry-after 头
  * - ECONNRESET → 下次重试 Connection: close（禁用 keep-alive 死连接）
  */
@@ -53,7 +53,7 @@ export async function fetchWithRetry(
       const onTotalAbort = () => reqController.abort();
       totalController.signal.addEventListener('abort', onTotalAbort, { once: true });
 
-      // ECONNRESET 后禁用 keep-alive，避免复用死连接（学自 Claude Code）
+      // ECONNRESET 后禁用 keep-alive，避免复用死连接
       const headers = { ...(init.headers as Record<string, string> || {}) };
       if (hadEconnreset) headers['Connection'] = 'close';
 
