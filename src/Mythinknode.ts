@@ -82,13 +82,14 @@ async function main() {
 
   session.lock();
 
-  console.log(`mythinknode v0.6.0`);
-  console.log(`Provider: ${config.provider}  |  Model: ${config.model}  |  Tools: ${tools.length}`);
-  console.log(`Config: ~/.mythinknode/config.json  |  Memory: ~/.mythinknode/MYTHINKNODE.md`);
-  console.log('Type /help for commands, /exit to quit\n');
-
-  // Session 循环
+  // Session 循环（createCLI 会进备用屏，banner 通过 cli.banner() 输出到备用屏缓冲）
   const cli = createCLI();
+  cli.banner([
+    `mythinknode v0.6.0`,
+    `Provider: ${config.provider}  |  Model: ${config.model}  |  Tools: ${tools.length}`,
+    `Config: ~/.mythinknode/config.json  |  Memory: ~/.mythinknode/MYTHINKNODE.md`,
+    'Type /help for commands, /exit to quit',
+  ]);
 
   while (true) {
     const line = await cli.readLine();

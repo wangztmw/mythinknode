@@ -9,6 +9,7 @@ import type { ProgressEvent, MergedTool } from './monitor/progress.js';
 import { pollEvents } from './monitor/progress.js';
 import { mdToANSI, B, b, C, c } from './render/ansi.js';
 import { safeWrite, displayWidth, charWidth } from './render/term-wrap.js';
+import { OutputBuffer } from './output-buffer.js';
 
 const THINKING_PHASES = new Set(['analyzing', 'continuing', 'reviewing results', 'summarizing agent results', 'processing']);
 
@@ -46,76 +47,78 @@ function cleanInput(s: string): string {
     .replace(/\r/g, '');                        // 回车符（粘贴时终端换行是 \n，\r 是残留）
 }
 
-function renderProgress(event: ProgressEvent): void {
-  try {
-    const cols = process.stdout.columns || 80;
-    const wide = cols >= 60;
-
-    switch (event.type) {
-      case 'thinking_start': {
-        const name = phaseLabel(event.label);
-        const pfx = isFirstThinking ? '' : '\n';
-        isFirstThinking = false;
-        process.stdout.write(`${pfx}  ● ${B}${name}${b} (0.0s) — ${trunc(event.label, cols - 25)}\x1b[K`);
-        break;
-      }
-      case 'thinking_tick': {
-        // 窄终端：只显示首帧，抑制中间 tick 防止刷屏
-        if (!wide) break;
-        const s = (event.elapsedMs / 1000).toFixed(1);
-        const name = phaseLabel(event.label);
-        const desc = name === 'Thinking' ? ` — ${trunc(event.label, cols - 25)}` : '';
-        process.stdout.write(`\r  ● ${B}${name}${b} (${s}s)${desc}\x1b[K`);
-        break;
-      }
-      case 'thinking_end': {
-        const raw = event.elapsedMs / 1000;
-        const s = raw < 0.1 ? '<0.1' : raw.toFixed(1);
-        const hint = event.toolCount > 0 ? ` → ${event.toolCount} tool${event.toolCount > 1 ? 's' : ''}` : '';
-        const pfx = wide ? '\r' : '\n';
-        process.stdout.write(`${pfx}  ● ${B}Thinking${b} (${s}s) — ${trunc(event.label, cols - 25)}${hint}\x1b[K\n`);
-        break;
-      }
-      case 'thought': {
-        const ansi = mdToANSI(event.text.slice(0, 300));
-        process.stdout.write(`  ${wide ? ansi : trunc(ansi, cols - 4)}\n`);
-        break;
-      }
-      case 'tool_display':
-        renderMergedTools(event.calls, event.elapsedMs);
-        break;
-      case 'error':
-        process.stdout.write(`  ✗ ${event.message}\n`);
-        break;
+/** 把 thinking 事件转成状态行字符串（thinking_start/tick/end 显示在输入行上方，不进历史） */
+function renderStatusLine(event: ProgressEvent): string {
+  const cols = process.stdout.columns || 80;
+  const wide = cols >= 60;
+  switch (event.type) {
+    case 'thinking_start': {
+      const name = phaseLabel(event.label);
+      return `  ● ${B}${name}${b} (0.0s) — ${trunc(event.label, cols - 25)}`;
     }
-  } catch { /* 渲染不应崩 */ }
+    case 'thinking_tick': {
+      if (!wide) return '';
+      const s = (event.elapsedMs / 1000).toFixed(1);
+      const name = phaseLabel(event.label);
+      const desc = name === 'Thinking' ? ` — ${trunc(event.label, cols - 25)}` : '';
+      return `  ● ${B}${name}${b} (${s}s)${desc}`;
+    }
+    case 'thinking_end': {
+      const raw = event.elapsedMs / 1000;
+      const s = raw < 0.1 ? '<0.1' : raw.toFixed(1);
+      const hint = event.toolCount > 0 ? ` → ${event.toolCount} tool${event.toolCount > 1 ? 's' : ''}` : '';
+      return `  ● ${B}Thinking${b} (${s}s) — ${trunc(event.label, cols - 25)}${hint}`;
+    }
+    default:
+      return '';
+  }
 }
 
-function renderMergedTools(merged: MergedTool[], elapsedMs?: number): void {
+/** 把 thought/tool/error 事件转成历史行文本（多行），供 buffer.append */
+function renderEventLines(event: ProgressEvent): string {
+  const cols = process.stdout.columns || 80;
+  const wide = cols >= 60;
+  switch (event.type) {
+    case 'thought': {
+      const ansi = mdToANSI(event.text.slice(0, 300));
+      return `  ${wide ? ansi : trunc(ansi, cols - 4)}`;
+    }
+    case 'tool_display':
+      return renderMergedToolsText(event.calls, event.elapsedMs);
+    case 'error':
+      return `  ✗ ${event.message}`;
+    default:
+      return '';
+  }
+}
+
+function renderMergedToolsText(merged: MergedTool[], elapsedMs?: number): string {
   const cols = process.stdout.columns || 80;
   const wide = cols >= 60;
   const pfx = wide ? '\r' : '\n';
+  let out = '';
   for (const m of merged) {
     const label = m.count > 1 ? `${m.name} ×${m.count}` : m.name;
     const params = m.inputs.join(', ');
     const info = m.count > 1 ? `(${m.lines} lines total)` : `→ ${m.sample}`;
     const time = elapsedMs != null ? ` (${(elapsedMs / 1000).toFixed(1)}s)` : '';
     const rest = `${time}: ${params}  ${info}`;
-    process.stdout.write(`${pfx}  ● ${B}${label}${b}${trunc(rest, cols - 10)}\x1b[K\n`);
+    out += `${pfx}  ● ${B}${label}${b}${trunc(rest, cols - 10)}`;
   }
+  return out;
 }
 
 // ---- REPL ----
 
 export function createCLI() {
-  // 自建内容管理：raw mode + 自管 stdin，彻底绕开 readline。
+  // 自建内容管理 + 备用屏接管：raw mode + 自管 stdin + 全屏重绘。
   //
   // 为什么不用 readline：
   //   - terminal: true  → IME 正常，但超长单行 O(n²) 逐字符回显重绘卡死（实测 5 万字卡死）
   //   - terminal: false → 超长行 O(1)，但 canonical mode 破坏 IME composition 状态机 → 中文输入卡死
   //
-  // raw mode 本身就能保 IME（豆包输入法实测正常），readline 的逐字符回显才是卡死根源。
-  // 自管方案 = raw mode（保 IME）+ 追加式 echo O(1)（不重绘整行）+ 回车提交 + 光标编辑。
+  // 备用屏 + 全屏重绘：程序完全控制屏幕内容，历史进内存缓冲，屏幕只显示简单可视窗口，
+  // 从源头避开 Terminal.app 渲染层的 malloc 崩溃（5 份崩溃报告佐证）。
   const PROMPT = `${C}${B}mythinknode${b}${c} ${B}>>>${b} `;
 
   let resolveLine: ((value: string) => void) | null = null;
@@ -126,36 +129,25 @@ export function createCLI() {
   // bracketed paste 状态：粘贴中 = true。粘贴内容里的 \r 是换行，不是回车提交。
   let inPaste = false;
   let closed = false;
-  // 屏幕上当前渲染的输入块行数（从 prompt 行算起）。redraw 前用它上移回输入块第一行。
-  let renderedLines = 1;
+  // 状态行（thinking/tool 进度），显示在输入行上方，不进历史。空串 = 无状态行。
+  let statusLine = '';
+  // 输入防抖定时器（打字防抖 100ms 后再全屏重绘，降低重绘频率）
+  let inputDebounce: ReturnType<typeof setTimeout> | null = null;
+  // 历史输出缓冲
+  const buffer = new OutputBuffer();
 
   // 进入 raw mode（保 IME composition 状态机）
   if (typeof process.stdin.setRawMode === 'function') {
     process.stdin.setRawMode(true);
   }
   process.stdin.setEncoding('utf8');
-  // 启用 bracketed paste：让终端用 \x1b[200~ 和 \x1b[201~ 包裹粘贴内容，
-  // 从而可靠区分"粘贴内容里的换行"和"用户按的回车提交"。
-  process.stdout.write('\x1b[?2004h');
+  // 备用屏 + bracketed paste + SGR 鼠标模式
+  process.stdout.write('\x1b[?1049h');   // 进备用屏
+  process.stdout.write('\x1b[?2004h');   // bracketed paste
+  process.stdout.write('\x1b[?1000h\x1b[?1006h');  // SGR 鼠标（滚轮事件）
 
-  /** 光标所在的行和列（考虑 wrap + 显式 \n + 双宽）。
-   *  返回 { line, col }：line 从 0 起（第 0 行是 prompt 所在行），col 是该行的显示列。 */
-  const cursorPos = () => {
-    const cols = process.stdout.columns || 80;
-    const promptW = displayWidth(PROMPT);
-    let line = 0, col = promptW;
-    for (let i = 0; i < cursor; i++) {
-      const c = chars[i];
-      if (c === '\n') { line++; col = 0; continue; }
-      const w = charWidth(c);
-      if (col + w > cols) { line++; col = w; }  // 折行到下一行
-      else { col += w; }
-    }
-    return { line, col };
-  };
-
-  /** 内容占用的屏幕行数（从 prompt 行算起），用于重绘时上移清除 */
-  const contentLines = () => {
+  /** 输入行占用的屏幕行数（含 PROMPT，考虑折行 + 显式 \n + 双宽） */
+  const inputLineCount = () => {
     const cols = process.stdout.columns || 80;
     const promptW = displayWidth(PROMPT);
     let lines = 1, col = promptW;
@@ -168,44 +160,94 @@ export function createCLI() {
     return lines;
   };
 
-  /** 重绘整块（可能多行）：
-   *  上移回输入块第一行 → \r 回行首 → \x1b[J 清屏到末尾 → 写 prompt+全部内容 → 光标定位回 cursor 所在行列 */
-  const redraw = () => {
-    const newLines = contentLines();
-    const { line, col } = cursorPos();
+  /** 光标在输入行内的行列（line 从输入行第一行=0 起，col 是该行显示列） */
+  const cursorPos = () => {
+    const cols = process.stdout.columns || 80;
+    const promptW = displayWidth(PROMPT);
+    let line = 0, col = promptW;
+    for (let i = 0; i < cursor; i++) {
+      const c = chars[i];
+      if (c === '\n') { line++; col = 0; continue; }
+      const w = charWidth(c);
+      if (col + w > cols) { line++; col = w; }
+      else { col += w; }
+    }
+    return { line, col };
+  };
+
+  /** 主动折行输入内容（从 prompt 后开始），超宽处插 \n，让终端不做软折行 */
+  const foldInput = () => {
+    const cols = process.stdout.columns || 80;
+    const promptW = displayWidth(PROMPT);
+    let col = promptW;
     let out = '';
-    // 1. 上移回输入块第一行（屏幕光标可能在最后一行，先回到起始行才能完整清屏）
-    if (renderedLines > 1) out += `\x1b[${renderedLines - 1}A`;
-    // 2. 回行首 + 清屏到末尾 + 重写 prompt + 全部内容
-    out += `\r\x1b[J${PROMPT}${chars.join('')}`;
-    // 3. 光标定位：从内容末尾（最后一行）上移回 cursor 所在行，\r 回该行首，右移 col 列
-    const upToCursor = newLines - 1 - line;
+    for (const c of chars) {
+      if (c === '\n') { out += '\n'; col = 0; continue; }
+      const w = charWidth(c);
+      if (col + w > cols) { out += '\n' + c; col = w; }
+      else { out += c; col += w; }
+    }
+    return out;
+  };
+
+  /** 全屏重绘统一入口：清屏 → 历史可视窗口 → 状态行 → 输入行 → 光标定位 */
+  const render = () => {
+    if (closed) return;
+    const rows = process.stdout.rows || 24;
+    const inputLines = inputLineCount();
+    const statusLines = statusLine ? 1 : 0;
+    // 历史区高度 = 总行数 - 输入行数 - 状态行数
+    const histHeight = Math.max(1, rows - inputLines - statusLines);
+
+    const histLines = buffer.visible(histHeight);
+    const foldedInput = foldInput();
+    const { line: curLine, col: curCol } = cursorPos();
+
+    let out = '\x1b[2J\x1b[H';  // 清屏 + 光标回左上角
+    // 1. 历史可视窗口
+    for (const l of histLines) out += l + '\r\n';
+    // 2. 状态行
+    if (statusLine) out += statusLine + '\r\n';
+    // 3. 输入行（折行后）
+    out += PROMPT + foldedInput;
+    // 4. 光标定位：从输入行末尾上移回 cursor 所在行，\r 回行首，绝对列定位到 col
+    const upToCursor = inputLines - 1 - curLine;
     if (upToCursor > 0) out += `\x1b[${upToCursor}A`;
     out += '\r';
-    if (col > 0) out += `\x1b[${col}C`;
-    renderedLines = newLines;
+    out += `\x1b[${curCol + 1}G`;  // 绝对列定位（1-based），不用相对右移
     process.stdout.write(out);
+  };
+
+  /** 打字防抖：停止输入 100ms 后才全屏重绘（编辑操作则立即重绘） */
+  const scheduleRender = () => {
+    if (inputDebounce) clearTimeout(inputDebounce);
+    inputDebounce = setTimeout(render, 100);
   };
 
   const settle = () => {
     if (!resolveLine) return;
     const text = cleanInput(chars.join('').trim());
+    // 把用户这行输入追加进历史（这样回车后内容不丢）
+    if (text) buffer.append(PROMPT + text);
     chars = [];
     cursor = 0;
-    renderedLines = 1;
+    statusLine = '';
     const resolve = resolveLine;
     resolveLine = null;
+    render();  // 立即重绘：历史含用户输入，输入行清空
     resolve(text);
   };
 
   process.stdin.on('data', (chunk: string) => {
     if (closed) return;
+    // SGR 鼠标滚轮：\x1b[<64;...M（上）/ \x1b[<65;...M（下）→ 滚动历史
+    if (chunk.startsWith('\x1b[<64;')) { buffer.scroll(-3); render(); return; }
+    if (chunk.startsWith('\x1b[<65;')) { buffer.scroll(3); render(); return; }
     // Ctrl+C (0x03) 退出
     if (chunk === '\x03') { process.stdout.write('\nBye.\n'); process.exit(0); }
     // bracketed paste 开始标记：进入粘贴模式，后面的 \r 都是内容换行
     if (chunk.includes('\x1b[200~')) {
       inPaste = true;
-      // 去掉开始标记，继续处理剩余内容
       chunk = chunk.replace(/\x1b\[200~/g, '');
       if (chunk === '') return;
     }
@@ -220,27 +262,26 @@ export function createCLI() {
     // 回车提交：仅在非粘贴模式下，单独的 \r 或 \n chunk 才是回车
     if (!inPaste && (chunk === '\r' || chunk === '\n')) {
       settle();
-      process.stdout.write('\n');
       return;
     }
-    // 方向键左/右（转义序列 \x1b[D / \x1b[C）—— 移动光标，重绘
+    // 方向键左/右 —— 移动光标，立即重绘（编辑操作需即时反馈）
     if (chunk === '\x1b[D') {
-      if (cursor > 0) { cursor--; redraw(); }
+      if (cursor > 0) { cursor--; render(); }
       return;
     }
     if (chunk === '\x1b[C') {
-      if (cursor < chars.length) { cursor++; redraw(); }
+      if (cursor < chars.length) { cursor++; render(); }
       return;
     }
-    // Home / End（可选，完善光标编辑）
-    if (chunk === '\x1b[H' || chunk === '\x1b[1~') { cursor = 0; redraw(); return; }
-    if (chunk === '\x1b[F' || chunk === '\x1b[4~') { cursor = chars.length; redraw(); return; }
-    // 退格（Backspace 0x7f 或 0x08）：删除光标前一个字符，双宽感知重绘
+    // Home / End
+    if (chunk === '\x1b[H' || chunk === '\x1b[1~') { cursor = 0; render(); return; }
+    if (chunk === '\x1b[F' || chunk === '\x1b[4~') { cursor = chars.length; render(); return; }
+    // 退格（Backspace 0x7f 或 0x08）
     if (chunk === '\x7f' || chunk === '\x08') {
       if (cursor > 0) {
         chars.splice(cursor - 1, 1);
         cursor--;
-        redraw();
+        render();
       }
       return;
     }
@@ -248,30 +289,31 @@ export function createCLI() {
     if (chunk === '\x1b[3~') {
       if (cursor < chars.length) {
         chars.splice(cursor, 1);
-        redraw();
+        render();
       }
       return;
     }
 
-    // 普通输入：粘贴多行时 \r 转 \n（粘贴模式下 \r 是换行，非粘贴模式下 \r 也是换行）
+    // 普通输入：粘贴多行时 \r 转 \n
     const text = chunk.replace(/\r/g, '\n');
     const newChars = Array.from(text);  // 按 code point 分割
     if (cursor === chars.length) {
-      // 光标在末尾：追加 O(1)，只 echo 新字符，不重绘整行（超长行不卡的关键）
       chars.push(...newChars);
       cursor = chars.length;
-      process.stdout.write(text);
-      // 追加可能触发折行，更新渲染行数
-      renderedLines = contentLines();
+      scheduleRender();  // 打字防抖 100ms 后重绘
     } else {
-      // 光标在中间：插入 + 重绘整行
       chars.splice(cursor, 0, ...newChars);
       cursor += newChars.length;
-      redraw();
+      render();  // 中间插入立即重绘
     }
   });
 
   return {
+    banner(lines: string[]): void {
+      for (const l of lines) buffer.append(l);
+      render();
+    },
+
     setBusy(busy: boolean): void {
       if (busy) {
         process.stdin.pause();
@@ -285,34 +327,57 @@ export function createCLI() {
         resolveLine = resolve;
         chars = [];
         cursor = 0;
-        renderedLines = 1;
-        process.stdout.write(PROMPT);
+        statusLine = '';
+        render();
       });
     },
 
     renderResult(text: string, ms: number, inputTokens?: number, outputTokens?: number): void {
       const s = (ms / 1000).toFixed(1);
       const tok = inputTokens != null ? ` | in: ${inputTokens}, out: ${outputTokens}` : '';
-      safeWrite(`\n${mdToANSI(text)}\n[${s}s${tok}]`);
+      // 最终结果进历史缓冲，然后重绘
+      buffer.append(mdToANSI(text));
+      buffer.append(`[${s}s${tok}]`);
+      statusLine = '';
+      render();
     },
 
     renderError(err: string): void {
-      process.stdout.write(`Error: ${err}\n`);
+      buffer.append(`Error: ${err}`);
+      statusLine = '';
+      render();
     },
 
     startRender(engine: { events: Array<{ type: string; [key: string]: unknown }> }): () => void {
       isFirstThinking = true;  // 每次新查询，重置"第一个 thinking 不换行"标志
-      return pollEvents(engine, renderProgress);
+      return pollEvents(engine, (e) => {
+        // thinking 系列进状态行（输入行上方），thought/tool/error 进历史缓冲
+        if (e.type === 'thinking_start' || e.type === 'thinking_tick' || e.type === 'thinking_end') {
+          statusLine = renderStatusLine(e);
+          render();
+        } else if (e.type === 'thought' || e.type === 'tool_display' || e.type === 'error') {
+          const line = renderEventLines(e);
+          if (line) {
+            buffer.append(line);
+            statusLine = '';
+            render();
+          }
+        }
+      });
     },
 
     showHelp(toolNames: string[]): void {
-      process.stdout.write(`Tools: ${toolNames.join(', ')}\nCommands: /exit, /help\n`);
+      buffer.append(`Tools: ${toolNames.join(', ')}`);
+      buffer.append('Commands: /exit, /help');
+      render();
     },
 
     close(): void {
       closed = true;
-      // 关闭 bracketed paste + 恢复 raw mode，避免退出后终端状态残留
-      process.stdout.write('\x1b[?2004l');
+      // 退出备用屏 + 关闭 bracketed paste + 鼠标模式 + 恢复 raw mode
+      process.stdout.write('\x1b[?1000l\x1b[?1006l');  // 关鼠标
+      process.stdout.write('\x1b[?2004l');            // 关 bracketed paste
+      process.stdout.write('\x1b[?1049l');            // 退备用屏
       if (typeof process.stdin.setRawMode === 'function') {
         try { process.stdin.setRawMode(false); } catch { /* 忽略 */ }
       }

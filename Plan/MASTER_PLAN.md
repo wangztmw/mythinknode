@@ -19,6 +19,7 @@
 
 | 项目 | 内容 | 文件 |
 |------|------|------|
+| — | **备用屏 + 滚动缓冲**：程序接管屏幕渲染，内存缓冲 + 滚轮回看，根治 Terminal 渲染崩溃 | [20260815-1315-alt-screen-buffer/](20260815-1315-alt-screen-buffer/README.md) |
 | — | **CLI 输入 + 心跳频率**：渲染 12.5Hz→1Hz（对齐 Claude Code）+ 多行粘贴（bracketed paste） | [20260814-1625-cli-input-heartbeat/](20260814-1625-cli-input-heartbeat/README.md) |
 | — | **CLI 渲染隔离**：子 Agent 事件不灌主屏（silent 参数贯穿 agentLoop，多 Agent 卡顿根治） | [20260814-1416-cli-render-isolation/](20260814-1416-cli-render-isolation/README.md) |
 | — | **锦上添花**：断连信号修复（9 断开 + 7 部分 = 16 项） | [20260806-1315-plan-jin-shang-tian-hua.md](20260806-1315-plan-jin-shang-tian-hua.md) |
