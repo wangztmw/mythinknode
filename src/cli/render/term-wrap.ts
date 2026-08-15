@@ -7,7 +7,7 @@
 
 const ANSI_END = /^[A-Za-z]$/;
 
-function charWidth(c: string): number {
+export function charWidth(c: string): number {
   const code = c.codePointAt(0)!;
   if ((code >= 0x4E00 && code <= 0x9FFF) || (code >= 0x3400 && code <= 0x4DBF) ||
       (code >= 0xF900 && code <= 0xFAFF)) return 2;
