@@ -118,8 +118,8 @@ async function main() {
       session.save();
       continue;
     }
-    // 先停渲染，再输出结果 —— 否则 pollEvents 定时器还会消费队列里残留的
-    // thinking_end/tool_display 事件，把 `\r ● Thinking...` 插进结果和 prompt 之间，导致输入口错乱。
+    // 先停渲染，再输出结果。推式事件下 runSession resolve 后不会再有 emit，
+    // stopRender 只是安全网：刷掉最后的 pendingTick + 退订，保证结果渲染与进度事件原子。
     stopRender();
     cli.renderResult(result.text, result.ms, result.inputTokens, result.outputTokens);
     cli.setBusy(false);

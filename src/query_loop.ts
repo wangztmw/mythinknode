@@ -97,11 +97,11 @@ async function executeTools(
 
   if (!silent) {
     // 立刻显示工具名（0s）
-    engine.events.push({ type: 'thinking_tick', label: toolNames, elapsedMs: 0 });
+    engine.emit({ type: 'thinking_tick', label: toolNames, elapsedMs: 0 });
 
     // 心跳定时器（1s，对齐 Claude Code 节奏，避免高频 \r 覆写刺激 Terminal 渲染层）
     toolTick = setInterval(() => {
-      engine.events.push({ type: 'thinking_tick', label: toolNames, elapsedMs: Date.now() - toolStart });
+      engine.emit({ type: 'thinking_tick', label: toolNames, elapsedMs: Date.now() - toolStart });
     }, 1000);
   }
 
@@ -115,7 +115,7 @@ async function executeTools(
 
   if (toolTick) clearInterval(toolTick);
   const elapsed = Date.now() - toolStart;
-  if (!silent) engine.events.push({ type: 'tool_display', calls: engine.mergeToolCalls(calls), elapsedMs: elapsed });
+  if (!silent) engine.emit({ type: 'tool_display', calls: engine.mergeToolCalls(calls), elapsedMs: elapsed });
   return calls;
 }
 
@@ -167,11 +167,11 @@ export async function agentLoop(
       const phase = phaseLabel?.(i, messages[messages.length - 1]?.content) ?? 'processing';
       let tick: ReturnType<typeof setInterval> | undefined;
       if (!silent) {
-        engine.events.push({ type: 'thinking_start', label: phase, time: thinkStart });
+        engine.emit({ type: 'thinking_start', label: phase, time: thinkStart });
 
         // 心跳：每 1s 推一个 tick（对齐 Claude Code，避免高频 \r 覆写刺激 Terminal）
         tick = setInterval(() => {
-          engine.events.push({ type: 'thinking_tick', label: phase, elapsedMs: Date.now() - thinkStart });
+          engine.emit({ type: 'thinking_tick', label: phase, elapsedMs: Date.now() - thinkStart });
         }, 1000);
       }
 
@@ -187,7 +187,7 @@ export async function agentLoop(
 
       const elapsedMs = Date.now() - thinkStart;
       const toolCount = (response.content as Array<{ type: string }>).filter(b => b.type === 'tool_use').length;
-      if (!silent) engine.events.push({ type: 'thinking_end', label: phase, elapsedMs, toolCount, time: Date.now() });
+      if (!silent) engine.emit({ type: 'thinking_end', label: phase, elapsedMs, toolCount, time: Date.now() });
     } catch (e) {
       const errMsg = (e as Error).message || String(e);
       return { status: 'crashed', text: `LLM call failed: ${errMsg}`, roundCount: i + 1, inputTokens, outputTokens };
@@ -209,7 +209,7 @@ export async function agentLoop(
 
     if (response.stop_reason === 'tool_use') {
       const thoughts = extractThoughts(response);
-      if (thoughts && !silent) engine.events.push({ type: 'thought', text: thoughts });
+      if (thoughts && !silent) engine.emit({ type: 'thought', text: thoughts });
       messages.push({ role: 'assistant', content: response.content });
 
       let feedback: string | undefined;

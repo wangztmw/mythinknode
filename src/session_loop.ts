@@ -55,7 +55,6 @@ export async function runSession(
   const nodemind = getNodeMind();
   const processor = getProcessor(engine.llm, session.id);
 
-  engine.events.length = 0;
   session.flushNotifications();
   session.addMessage({ role: 'user', content: userInput });
 

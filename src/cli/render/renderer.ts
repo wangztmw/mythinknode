@@ -97,29 +97,6 @@ function renderMergedTools(merged: MergedTool[], elapsedMs?: number): string {
   return parts.join('\n');
 }
 
-/** 启动事件轮询。每 1s 消费事件队列（对齐 Claude Code 节奏），tick 类型只取最后一条（防止 \r 刷新过于密集导致 Terminal 崩溃）。返回 stop 函数。 */
-function pollEvents(engine: { events: Array<{ type: string; [key: string]: unknown }> }, render: (e: ProgressEvent) => void): () => void {
-  const timer = setInterval(() => {
-    let pendingTick: ProgressEvent | null = null;
-    const flushTick = () => {
-      if (!pendingTick) return;
-      try { render(pendingTick); } catch { /* 渲染不应崩 */ }
-      pendingTick = null;
-    };
-    while (engine.events.length > 0) {
-      const e = engine.events.shift()! as ProgressEvent;
-      if (e.type === 'thinking_tick') {
-        pendingTick = e; // 连续 tick 只保留最后一条
-        continue;
-      }
-      flushTick(); // 非 tick 事件前先刷 tick，保持时间顺序（否则 tick 会插到 thinking_end 之后重复一行）
-      try { render(e); } catch { /* 渲染不应崩 */ }
-    }
-    flushTick();
-  }, 1000);
-  return () => clearInterval(timer);
-}
-
 export function createRenderer() {
   return {
     renderResult(text: string, ms: number, inputTokens?: number, outputTokens?: number): void {
@@ -132,9 +109,31 @@ export function createRenderer() {
       safeWrite(`Error: ${err}`);
     },
 
-    startRender(engine: { events: Array<{ type: string; [key: string]: unknown }> }): () => void {
+    startRender(engine: { onEvent: (listener: (e: ProgressEvent) => void) => () => void }): () => void {
       isFirstThinking = true;  // 每次新查询，重置"第一个 thinking 不换行"标志
-      return pollEvents(engine, renderProgress);
+      let pendingTick: ProgressEvent | null = null;
+      let tickTimer: ReturnType<typeof setInterval> | null = null;
+
+      const flushTick = () => {
+        if (!pendingTick) return;
+        const t = pendingTick; pendingTick = null;
+        try { renderProgress(t); } catch { /* 渲染不应崩 */ }
+      };
+
+      const unsub = engine.onEvent((e: ProgressEvent) => {
+        if (e.type === 'thinking_tick') { pendingTick = e; return; } // 连续 tick 只保留最后一条
+        flushTick(); // 非 tick 事件前先刷 tick，保持时间顺序（否则 tick 会插到 thinking_end 之后重复一行）
+        try { renderProgress(e); } catch { /* 渲染不应崩 */ }
+      });
+
+      // 镜像旧 pollEvents 的 1s 残量刷新：没有后续非 tick 事件时，也要把最后的 tick 刷出来
+      tickTimer = setInterval(flushTick, 1000);
+
+      return () => {
+        if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+        flushTick();
+        unsub();
+      };
     },
 
     showHelp(toolNames: string[]): void {

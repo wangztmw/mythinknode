@@ -75,10 +75,21 @@ export class AgentEngine {
   /** 通知回调 — Agent 完成/BLOCKED 时调用。Session 层注入。 */
   onNotify?: (msg: string) => void;
 
-  /** 运行时事件队列 — 前端（CLI/Web）主动轮询消费 */
-  events: Array<{ type: string; [key: string]: unknown }> = [];
+  /** 进度事件监听器 — 前端（CLI/Web）订阅消费 */
+  private eventListeners = new Set<(e: ProgressEvent) => void>();
   /** 最近一次 LLM 调用的 token 用量（query_loop 内部使用） */
   lastTokenUsage?: { input_tokens: number; output_tokens: number };
+
+  /** 同步广播进度事件。监听器不应抛异常（这里防御性包裹）。 */
+  emit(e: ProgressEvent): void {
+    for (const l of this.eventListeners) { try { l(e); } catch { /* 渲染不应崩 */ } }
+  }
+
+  /** 订阅进度事件。返回退订函数。 */
+  onEvent(listener: (e: ProgressEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => { this.eventListeners.delete(listener); };
+  }
 
   /** Agent 状态表——唯一持有者 */
   team: Map<string, MemberState> = new Map();
