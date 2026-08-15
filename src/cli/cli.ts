@@ -56,7 +56,8 @@ function renderProgress(event: ProgressEvent): void {
         const name = phaseLabel(event.label);
         const pfx = isFirstThinking ? '' : '\n';
         isFirstThinking = false;
-        process.stdout.write(`${pfx}  ● ${B}${name}${b} (0.0s) — ${trunc(event.label, cols - 25)}\x1b[K`);
+        // 保存 thinking 行光标位置，tick 用 \x1b[u 恢复覆写，避免 tool_display/thought 换行后 \r 回错行
+        process.stdout.write(`\x1b[s${pfx}  ● ${B}${name}${b} (0.0s) — ${trunc(event.label, cols - 25)}\x1b[K`);
         break;
       }
       case 'thinking_tick': {
@@ -65,15 +66,14 @@ function renderProgress(event: ProgressEvent): void {
         const s = (event.elapsedMs / 1000).toFixed(1);
         const name = phaseLabel(event.label);
         const desc = name === 'Thinking' ? ` — ${trunc(event.label, cols - 25)}` : '';
-        process.stdout.write(`\r  ● ${B}${name}${b} (${s}s)${desc}\x1b[K`);
+        process.stdout.write(`\x1b[u  ● ${B}${name}${b} (${s}s)${desc}\x1b[K`);
         break;
       }
       case 'thinking_end': {
         const raw = event.elapsedMs / 1000;
         const s = raw < 0.1 ? '<0.1' : raw.toFixed(1);
         const hint = event.toolCount > 0 ? ` → ${event.toolCount} tool${event.toolCount > 1 ? 's' : ''}` : '';
-        const pfx = wide ? '\r' : '\n';
-        process.stdout.write(`${pfx}  ● ${B}Thinking${b} (${s}s) — ${trunc(event.label, cols - 25)}${hint}\x1b[K\n`);
+        process.stdout.write(`\x1b[u  ● ${B}Thinking${b} (${s}s) — ${trunc(event.label, cols - 25)}${hint}\x1b[K\n`);
         break;
       }
       case 'thought': {
@@ -298,7 +298,8 @@ export function createCLI() {
     renderResult(text: string, ms: number, inputTokens?: number, outputTokens?: number): void {
       const s = (ms / 1000).toFixed(1);
       const tok = inputTokens != null ? ` | in: ${inputTokens}, out: ${outputTokens}` : '';
-      safeWrite(`\n${mdToANSI(text)}\n[${s}s${tok}]`);
+      // settle 已清屏并换行，thinking_end 也已换行，这里不再加开头 \n（否则多空行）
+      safeWrite(`${mdToANSI(text)}\n[${s}s${tok}]\n`);
     },
 
     renderError(err: string): void {
