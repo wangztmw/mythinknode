@@ -25,10 +25,36 @@ export function displayWidth(s: string): number {
   return w;
 }
 
-function breakLine(line: string, maxWidth: number): string {
-  const parts: string[] = [];
-  let visible = 0, lastBreak = 0;
-  const sgrStack: string[] = []; // 追踪活跃的 ANSI SGR 码，断行后重新注入
+/**
+ * 延迟折行（DEC autowrap）判定：光标当前在第 `col` 列（0 起），要写一个宽 `w` 的字符，
+ * 是否需要先折到下一行。
+ *
+ * 终端（xterm / Terminal.app / iTerm2）的真实行为是「延迟折行」：
+ *   - 宽 1 的字符可以放进最后一列（第 cols-1 列），光标进入 pending-wrap（本模型用 col==cols 表示）；
+ *   - 直到「下一个」字符才真正折行；
+ *   - 宽 2 的字符塞不进最后一列（需要 cols-1、cols 两列，只剩一列），此时提前折行。
+ *
+ * 因此折行条件是 `col + w > cols`（而非 `>=`）。用 `>=` 会在「正好写满最后一列」时提前折行，
+ * 让 cursorPos/contentLines 与终端实际渲染不一致 —— 输入层自管光标与输出层/终端对光标位置的认知
+ * 就此错开，累积几轮后 redraw 的 \x1b[{n}A / \x1b[{col}C 定位错误，出现空位、少字甚至把终端弄崩。
+ */
+export function shouldWrap(col: number, w: number, cols: number): boolean {
+  return col + w > cols;
+}
+
+/**
+ * 把一行逻辑文本主动折成多个可视行（每行显示宽 ≤ cols），ANSI SGR 跨行保留。
+ * 折行点与终端延迟 autowrap 一致（写满 cols 后下一个字符才折）。
+ *
+ * 用于 safeWrite：保证写入终端的每一行都不超过终端宽度，避免超长单行触发
+ * Terminal.app SwiftUI 布局递归崩溃（malloc corruption）。
+ */
+export function wrapLine(line: string, cols: number): string[] {
+  if (displayWidth(line) <= cols) return [line];
+  const rows: string[] = [];
+  let cur = '';
+  let curW = 0;
+  const sgr: string[] = [];
   for (let i = 0; i < line.length; i++) {
     if (line[i] === '\x1b') {
       const start = i; i++;
@@ -37,40 +63,37 @@ function breakLine(line: string, maxWidth: number): string {
         const seqStart = i;
         while (i < line.length && !ANSI_END.test(line[i])) i++;
         const seq = line.slice(seqStart, i);
-        if (line[i] === 'm') {
-          if (seq === '0') sgrStack.length = 0;
-          else sgrStack.push(seq);
-        }
+        if (line[i] === 'm') { if (seq === '0') sgr.length = 0; else sgr.push(seq); }
       }
-      if (i >= line.length || !ANSI_END.test(line[i])) i = start;
+      cur += line.slice(start, i + 1);
       continue;
     }
-    visible += charWidth(line[i]);
-    if (visible >= maxWidth) {
-      parts.push(line.slice(lastBreak, i + 1));
-      lastBreak = i + 1;
-      visible = 0;
-      // 断行后重新注入活跃的 ANSI 格式码
-      if (sgrStack.length > 0) {
-        parts.push(`\x1b[${sgrStack.join(';')}m`);
-      }
+    const w = charWidth(line[i]);
+    if (curW + w > cols && curW > 0) {
+      rows.push(cur);
+      cur = sgr.length ? `\x1b[${sgr.join(';')}m` : '';
+      curW = 0;
     }
+    cur += line[i];
+    curW += w;
   }
-  if (lastBreak < line.length) parts.push(line.slice(lastBreak));
-  return parts.join('');
+  rows.push(cur);
+  return rows;
 }
 
 /**
- * 写入 stdout，对超长行自动折行。仅用于 LLM 输出等可能产生超长行的路径。
- * readline、进度渲染、banner 等短输出不经过此函数。
+ * 写入 stdout，对超长行主动折行（插入 \n），保证没有任何一行超出终端宽度。
+ *
+ * 治本关键：Terminal.app 的 SwiftUI 渲染对「超长单行」布局递归不收敛 → nano malloc zone
+ * 腐败 → SIGTRAP/SIGBUS 崩溃。只要不输出超长行，Terminal 就不崩（与 Claude Code 的
+ * Ink/Yoga 自动折行同等保障）。仅用于 LLM 输出等可能产生超长行的路径；readline/进度/banner
+ * 等短输出不经此函数。
  */
 export function safeWrite(text: string): void {
   const width = process.stdout.columns || 120;
   for (const line of text.split('\n')) {
-    if (displayWidth(line) <= width) {
-      process.stdout.write(line + '\n');
-    } else {
-      process.stdout.write(breakLine(line, width) + '\n');
+    for (const row of wrapLine(line, width)) {
+      process.stdout.write(row + '\n');
     }
   }
 }

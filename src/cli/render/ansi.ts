@@ -31,11 +31,11 @@ export function mdToANSI(text: string): string {
   if (text.length > 8000) return text.replace(/```[\s\S]*?```/g, '[code]').replace(/[*#`|>-]/g, '');
 
   let result = text;
-  // 代码块
+  // 代码块（不再加 dim 灰——减少 ANSI 属性段，降低 Terminal 重绘的小对象分配，缓解 nano 腐败）
   result = result.replace(/```(\w*)\n([\s\S]*?)```/g, (_, _lang, code) =>
-    `\n${D}${code.trim()}${d}\n`);
+    `\n${code.trim()}\n`);
   // 行内代码
-  result = result.replace(/`([^`]+)`/g, `${D}$1${d}`);
+  result = result.replace(/`([^`]+)`/g, '$1');
   // 粗体
   result = result.replace(/\*\*(.+?)\*\*/g, `${B}$1${b}`);
   // 标题（先处理长标题再短，避免###被##误匹配）
@@ -51,10 +51,10 @@ export function mdToANSI(text: string): string {
     const cells = row.split('|').map((s: string) => s.trim());
     return '  ' + cells.map((s: string) => visualPad(s, 20)).join(' ').trim();
   });
-  // 水平线
-  result = result.replace(/^---$/gm, `${G}${'─'.repeat(60)}${c}`);
-  // 引用
-  result = result.replace(/^> (.+)$/gm, `${G}│ $1${c}`);
+  // 水平线（不再加灰）
+  result = result.replace(/^---$/gm, `${'─'.repeat(60)}`);
+  // 引用（不再加灰）
+  result = result.replace(/^> (.+)$/gm, `│ $1`);
   // 安全：确保ANSI码平衡(未闭合的粗体/灰色 → 关闭)
   let bOpen = 0, dOpen = 0;
   const re = /\x1b\[(1|22|2)m/g; let m;

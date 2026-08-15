@@ -8,7 +8,7 @@
 import type { ProgressEvent, MergedTool } from './monitor/progress.js';
 import { pollEvents } from './monitor/progress.js';
 import { mdToANSI, B, b, C, c } from './render/ansi.js';
-import { safeWrite, displayWidth, charWidth } from './render/term-wrap.js';
+import { safeWrite, displayWidth, charWidth, shouldWrap, wrapLine } from './render/term-wrap.js';
 
 const THINKING_PHASES = new Set(['analyzing', 'continuing', 'reviewing results', 'summarizing agent results', 'processing']);
 
@@ -17,16 +17,13 @@ let isFirstThinking = true;
 
 // ---- 渲染 ----
 
-/** CJK 双宽感知截断 */
+/** CJK 双宽感知截断（用 charWidth，与输入层/终端宽度计算同一套，避免 FFE0-FFE6 全角符号漏判） */
 function trunc(s: string, maxCols: number): string {
-  if (displayWidth(s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')) <= maxCols) return s;
+  if (displayWidth(s) <= maxCols) return s;
   let visible = 0, cut = 0;
   for (let i = 0; i < s.length; i++) {
     if (s[i] === '\x1b') { while (i < s.length && s[i] !== 'm') i++; continue; }
-    const code = s.codePointAt(i)!;
-    visible += (code >= 0x4E00 && code <= 0x9FFF) || (code >= 0x3400 && code <= 0x4DBF) ||
-               (code >= 0xF900 && code <= 0xFAFF) || (code >= 0x3000 && code <= 0x303F) ||
-               (code >= 0xFF01 && code <= 0xFF60) || (code >= 0xAC00 && code <= 0xD7AF) ? 2 : 1;
+    visible += charWidth(s[i]);
     if (visible >= maxCols - 1) { cut = i + 1; break; }
   }
   return s.slice(0, cut) + '…';
@@ -63,8 +60,9 @@ function renderProgress(event: ProgressEvent): void {
         // 窄终端：只显示首帧，抑制中间 tick 防止刷屏
         if (!wide) break;
         const s = (event.elapsedMs / 1000).toFixed(1);
-        const name = phaseLabel(event.label);
-        const desc = name === 'Thinking' ? ` — ${trunc(event.label, cols - 25)}` : '';
+        const isThinking = phaseLabel(event.label) === 'Thinking';
+        const name = trunc(phaseLabel(event.label), cols - 15);  // 工具名可能很长（多工具列表），截断防超长
+        const desc = isThinking ? ` — ${trunc(event.label, cols - 25)}` : '';
         process.stdout.write(`\r  ● ${B}${name}${b} (${s}s)${desc}\x1b[K`);
         break;
       }
@@ -78,31 +76,40 @@ function renderProgress(event: ProgressEvent): void {
       }
       case 'thought': {
         const ansi = mdToANSI(event.text.slice(0, 300));
-        process.stdout.write(`  ${wide ? ansi : trunc(ansi, cols - 4)}\n`);
+        safeWrite(`  ${ansi}`);  // 经 safeWrite 折行，避免超长 thought 触发 Terminal 崩溃
         break;
       }
-      case 'tool_display':
-        renderMergedTools(event.calls, event.elapsedMs);
+      case 'tool_display': {
+        // 首行 \r 覆盖 tick 的状态行（"● Bash (0.0s)"），其余行正常换行；每行折行避免超长（工具 sample 可能多行）
+        const text = renderMergedTools(event.calls, event.elapsedMs);
+        let first = true;
+        for (const line of text.split('\n')) {
+          for (const row of wrapLine(line, cols)) {
+            process.stdout.write(`${first ? '\r' : ''}${row}\x1b[K\n`);
+            first = false;
+          }
+        }
         break;
+      }
       case 'error':
-        process.stdout.write(`  ✗ ${event.message}\n`);
+        safeWrite(`  ✗ ${event.message}`);  // 经 safeWrite 折行，避免超长 error 触发 Terminal 崩溃
         break;
     }
   } catch { /* 渲染不应崩 */ }
 }
 
-function renderMergedTools(merged: MergedTool[], elapsedMs?: number): void {
+function renderMergedTools(merged: MergedTool[], elapsedMs?: number): string {
   const cols = process.stdout.columns || 80;
-  const wide = cols >= 60;
-  const pfx = wide ? '\r' : '\n';
+  const parts: string[] = [];
   for (const m of merged) {
     const label = m.count > 1 ? `${m.name} ×${m.count}` : m.name;
     const params = m.inputs.join(', ');
     const info = m.count > 1 ? `(${m.lines} lines total)` : `→ ${m.sample}`;
     const time = elapsedMs != null ? ` (${(elapsedMs / 1000).toFixed(1)}s)` : '';
     const rest = `${time}: ${params}  ${info}`;
-    process.stdout.write(`${pfx}  ● ${B}${label}${b}${trunc(rest, cols - 10)}\x1b[K\n`);
+    parts.push(`  ● ${B}${label}${b}${trunc(rest, cols - 10)}`);
   }
+  return parts.join('\n');
 }
 
 // ---- REPL ----
@@ -148,7 +155,7 @@ export function createCLI() {
       const c = chars[i];
       if (c === '\n') { line++; col = 0; continue; }
       const w = charWidth(c);
-      if (col + w > cols) { line++; col = w; }  // 折行到下一行
+      if (shouldWrap(col, w, cols)) { line++; col = w; }  // 延迟折行，与终端 autowrap 一致
       else { col += w; }
     }
     return { line, col };
@@ -162,22 +169,38 @@ export function createCLI() {
     for (const c of chars) {
       if (c === '\n') { lines++; col = 0; continue; }
       const w = charWidth(c);
-      if (col + w > cols) { lines++; col = w; }
+      if (shouldWrap(col, w, cols)) { lines++; col = w; }  // 延迟折行，与终端 autowrap 一致
       else { col += w; }
     }
     return lines;
   };
 
+  /** 主动折行输入内容：超宽处插 \n，让终端不做软折行（与 cursorPos/contentLines 用同一 shouldWrap，行列一致）。
+   *  这是「无超长行」系统级保证的输入侧：裸 echo 会让终端把超长输入软折成超长逻辑行，
+   *  触发 Terminal 布局递归 → 缓冲区腐败（表现是缺字）→ 继续打字 SIGBUS 崩溃。 */
+  const foldInput = () => {
+    const cols = process.stdout.columns || 80;
+    const promptW = displayWidth(PROMPT);
+    let col = promptW, out = '';
+    for (const c of chars) {
+      if (c === '\n') { out += '\n'; col = 0; continue; }
+      const w = charWidth(c);
+      if (shouldWrap(col, w, cols)) { out += '\n' + c; col = w; }
+      else { out += c; col += w; }
+    }
+    return out;
+  };
+
   /** 重绘整块（可能多行）：
-   *  上移回输入块第一行 → \r 回行首 → \x1b[J 清屏到末尾 → 写 prompt+全部内容 → 光标定位回 cursor 所在行列 */
+   *  上移回输入块第一行 → \r 回行首 → \x1b[J 清屏到末尾 → 写 prompt+折行内容 → 光标定位回 cursor 所在行列 */
   const redraw = () => {
     const newLines = contentLines();
     const { line, col } = cursorPos();
     let out = '';
     // 1. 上移回输入块第一行（屏幕光标可能在最后一行，先回到起始行才能完整清屏）
     if (renderedLines > 1) out += `\x1b[${renderedLines - 1}A`;
-    // 2. 回行首 + 清屏到末尾 + 重写 prompt + 全部内容
-    out += `\r\x1b[J${PROMPT}${chars.join('')}`;
+    // 2. 回行首 + 清屏到末尾 + 重写 prompt + 折行后的全部内容（不裸写 chars，避免超长行）
+    out += `\r\x1b[J${PROMPT}${foldInput()}`;
     // 3. 光标定位：从内容末尾（最后一行）上移回 cursor 所在行，\r 回该行首，右移 col 列
     const upToCursor = newLines - 1 - line;
     if (upToCursor > 0) out += `\x1b[${upToCursor}A`;
@@ -257,14 +280,24 @@ export function createCLI() {
     const text = chunk.replace(/\r/g, '\n');
     const newChars = Array.from(text);  // 按 code point 分割
     if (cursor === chars.length) {
-      // 光标在末尾：追加 O(1)，只 echo 新字符，不重绘整行（超长行不卡的关键）
+      // 光标在末尾：追加 O(1) 折行 echo——从当前列开始折叠新 chunk（超宽插 \n），
+      // 一次写入、不触发 \x1b[J（高频 \x1b[J 会腐败 nano malloc，输入法一打字就 SIGTRAP），
+      // 也不软折行（软折行超长会触发 Terminal 渲染 bug 导致缺字）。两者兼顾。
+      const cols = process.stdout.columns || 80;
+      const { col: startCol } = cursorPos();  // 新字符前的光标列（含 prompt 宽）
       chars.push(...newChars);
       cursor = chars.length;
-      process.stdout.write(text);
-      // 追加可能触发折行，更新渲染行数
+      let folded = '', col = startCol;
+      for (const c of newChars) {
+        if (c === '\n') { folded += '\n'; col = 0; continue; }
+        const w = charWidth(c);
+        if (shouldWrap(col, w, cols)) { folded += '\n' + c; col = w; }
+        else { folded += c; col += w; }
+      }
+      process.stdout.write(folded);  // 一次写入，低频
       renderedLines = contentLines();
     } else {
-      // 光标在中间：插入 + 重绘整行
+      // 光标在中间：插入 + 折行重绘（编辑操作低频，可接受）
       chars.splice(cursor, 0, ...newChars);
       cursor += newChars.length;
       redraw();
@@ -297,7 +330,7 @@ export function createCLI() {
     },
 
     renderError(err: string): void {
-      process.stdout.write(`Error: ${err}\n`);
+      safeWrite(`Error: ${err}`);
     },
 
     startRender(engine: { events: Array<{ type: string; [key: string]: unknown }> }): () => void {
@@ -306,7 +339,8 @@ export function createCLI() {
     },
 
     showHelp(toolNames: string[]): void {
-      process.stdout.write(`Tools: ${toolNames.join(', ')}\nCommands: /exit, /help\n`);
+      safeWrite(`Tools: ${toolNames.join(', ')}`);
+      safeWrite(`Commands: /exit, /help`);
     },
 
     close(): void {

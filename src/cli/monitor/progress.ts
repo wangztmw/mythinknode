@@ -29,16 +29,22 @@ export type ProgressEvent =
 /** 启动事件轮询。每 1s 消费事件队列（对齐 Claude Code 节奏），tick 类型只取最后一条（防止 \r 刷新过于密集导致 Terminal 崩溃）。返回 stop 函数。 */
 export function pollEvents(engine: { events: Array<{ type: string; [key: string]: unknown }> }, render: (e: ProgressEvent) => void): () => void {
   const timer = setInterval(() => {
-    let lastTick: ProgressEvent | null = null;
+    let pendingTick: ProgressEvent | null = null;
+    const flushTick = () => {
+      if (!pendingTick) return;
+      try { render(pendingTick); } catch { /* 渲染不应崩 */ }
+      pendingTick = null;
+    };
     while (engine.events.length > 0) {
       const e = engine.events.shift()! as ProgressEvent;
       if (e.type === 'thinking_tick') {
-        lastTick = e; // 只保留最后一条 tick，丢掉前面的
+        pendingTick = e; // 连续 tick 只保留最后一条
         continue;
       }
+      flushTick(); // 非 tick 事件前先刷 tick，保持时间顺序（否则 tick 会插到 thinking_end 之后重复一行）
       try { render(e); } catch { /* 渲染不应崩 */ }
     }
-    if (lastTick) try { render(lastTick); } catch { /* 渲染不应崩 */ }
+    flushTick();
   }, 1000);
   return () => clearInterval(timer);
 }
