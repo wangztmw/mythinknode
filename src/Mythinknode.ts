@@ -6,7 +6,7 @@
  */
 
 // ---- 配置 ----
-import { ConfigStore } from './cli/config.js';
+import { ConfigStore } from './config.js';
 
 // ---- 工具 ----
 import { getAllTools } from './tools/core/index.js';

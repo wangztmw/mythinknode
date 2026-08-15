@@ -4,7 +4,7 @@
  * 主Agent 和子Agent 的区别全在 AgentLoopParams 配置中。
  */
 import { AgentEngine } from './agent/agent_def.js';
-import type { ProgressEvent, MergedTool } from './cli/monitor/progress.js';
+import type { ProgressEvent, MergedTool } from './agent/progress.js';
 import type { ChatMessage } from './llm/types.js';
 
 export interface LoopResult {

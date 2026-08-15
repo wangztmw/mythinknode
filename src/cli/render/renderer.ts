@@ -2,8 +2,7 @@
  * 输出渲染器 — 消费 ProgressEvent，把引擎事件渲染成 ANSI。
  * 与输入层（input-buffer）完全解耦。对外只暴露 renderResult/renderError/startRender/showHelp。
  */
-import type { ProgressEvent, MergedTool } from '../monitor/progress.js';
-import { pollEvents } from '../monitor/progress.js';
+import type { ProgressEvent, MergedTool } from '../../agent/progress.js';
 import { mdToANSI, B, b } from './ansi.js';
 import { safeWrite, displayWidth, charWidth, wrapLine } from './term-wrap.js';
 
@@ -96,6 +95,29 @@ function renderMergedTools(merged: MergedTool[], elapsedMs?: number): string {
     parts.push(`  ● ${B}${label}${b}${trunc(rest, cols - 10)}`);
   }
   return parts.join('\n');
+}
+
+/** 启动事件轮询。每 1s 消费事件队列（对齐 Claude Code 节奏），tick 类型只取最后一条（防止 \r 刷新过于密集导致 Terminal 崩溃）。返回 stop 函数。 */
+function pollEvents(engine: { events: Array<{ type: string; [key: string]: unknown }> }, render: (e: ProgressEvent) => void): () => void {
+  const timer = setInterval(() => {
+    let pendingTick: ProgressEvent | null = null;
+    const flushTick = () => {
+      if (!pendingTick) return;
+      try { render(pendingTick); } catch { /* 渲染不应崩 */ }
+      pendingTick = null;
+    };
+    while (engine.events.length > 0) {
+      const e = engine.events.shift()! as ProgressEvent;
+      if (e.type === 'thinking_tick') {
+        pendingTick = e; // 连续 tick 只保留最后一条
+        continue;
+      }
+      flushTick(); // 非 tick 事件前先刷 tick，保持时间顺序（否则 tick 会插到 thinking_end 之后重复一行）
+      try { render(e); } catch { /* 渲染不应崩 */ }
+    }
+    flushTick();
+  }, 1000);
+  return () => clearInterval(timer);
 }
 
 export function createRenderer() {

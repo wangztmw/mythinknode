@@ -5,7 +5,7 @@
  */
 import type { Tool, Tools, ToolUseContext } from '../tools/core/Tool.js';
 import type { LLMClient, ChatMessage } from '../llm/types.js';
-import { ConfigStore } from '../cli/config.js';
+import { ConfigStore } from '../config.js';
 
 // ---- Agent 状态表 ----
 
@@ -31,7 +31,7 @@ export interface MemberState {
   pendingInstruction?: string;
 }
 
-import type { ToolCall, MergedTool, ProgressEvent } from '../cli/monitor/progress.js';
+import type { ToolCall, MergedTool, ProgressEvent } from './progress.js';
 
 // ---- 工具函数 ----
 

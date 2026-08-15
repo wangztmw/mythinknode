@@ -1,7 +1,7 @@
 import { z } from 'zod/v4';
 import { buildTool, type ToolUseContext, type ToolResult } from '../../core/Tool.js';
 import { DESCRIPTION } from './prompt.js';
-import { loadConfig } from '../../../cli/config.js';
+import { loadConfig } from '../../../config.js';
 import { tavilySearch } from '../tavily.js';
 
 const inputSchema = z.object({
