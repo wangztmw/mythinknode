@@ -126,8 +126,6 @@ export function createCLI() {
   // bracketed paste 状态：粘贴中 = true。粘贴内容里的 \r 是换行，不是回车提交。
   let inPaste = false;
   let closed = false;
-  // 屏幕上当前渲染的输入块行数（从 prompt 行算起）。redraw 前用它上移回输入块第一行。
-  let renderedLines = 1;
   // 打字防抖定时器：停止输入 100ms 后才全量重绘
   let echoTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -170,20 +168,19 @@ export function createCLI() {
     return lines;
   };
 
-  /** 全量重绘输入块（可能多行）：上移回第一行 → \x1b[J 清屏 → 写 prompt+chars → 光标定位。
-   *  追加和编辑统一走这里，chars 是唯一权威数据，彻底消除"增量 echo 与屏幕光标脱节"的竞态。 */
+  /** 全量重绘输入块（可能多行）：\x1b[u 恢复到保存的输入块起点 → \x1b[J 清 → 写 prompt+chars → 光标定位。
+   *  用保存/恢复光标（\x1b[s/\x1b[u）精确定位，替代 renderedLines 上移（上移依赖屏幕光标位置，易漂移）。 */
   const redraw = () => {
     if (echoTimer) { clearTimeout(echoTimer); echoTimer = null; }
-    const newLines = contentLines();
     const { line, col } = cursorPos();
-    let out = '';
-    if (renderedLines > 1) out += `\x1b[${renderedLines - 1}A`;
-    out += `\r\x1b[J${PROMPT}${chars.join('')}`;
-    const upToCursor = newLines - 1 - line;
+    let out = '\x1b[u';  // 恢复到 readLine 保存的输入块第一行
+    out += `\x1b[J${PROMPT}${chars.join('')}`;
+    // 光标定位：写完后光标在输入块末尾，上移回 cursor 所在行，绝对列定位
+    const inputLines = contentLines();
+    const upToCursor = inputLines - 1 - line;
     if (upToCursor > 0) out += `\x1b[${upToCursor}A`;
     out += '\r';
-    if (col > 0) out += `\x1b[${col + 1}G`;  // 绝对列定位（1-based）
-    renderedLines = newLines;
+    out += `\x1b[${col + 1}G`;  // 绝对列定位（1-based）
     process.stdout.write(out);
   };
 
@@ -197,9 +194,11 @@ export function createCLI() {
     if (!resolveLine) return;
     if (echoTimer) { clearTimeout(echoTimer); echoTimer = null; }
     const text = cleanInput(chars.join('').trim());
+    // 清掉输入块：\x1b[u 恢复到输入块第一行，\x1b[J 清到行尾，\n 换到新行。
+    // 这样后续 thinking/Agent 回复的输出不会覆盖残留的输入内容。
+    process.stdout.write('\x1b[u\x1b[J\n');
     chars = [];
     cursor = 0;
-    renderedLines = 1;
     const resolve = resolveLine;
     resolveLine = null;
     resolve(text);
@@ -290,9 +289,9 @@ export function createCLI() {
         resolveLine = resolve;
         chars = [];
         cursor = 0;
-        renderedLines = 1;
         if (echoTimer) { clearTimeout(echoTimer); echoTimer = null; }
-        process.stdout.write(PROMPT);
+        // 保存"输入块第一行"的光标位置，之后 redraw 用 \x1b[u 恢复到这里精确重绘
+        process.stdout.write('\x1b[s' + PROMPT);
       });
     },
 
