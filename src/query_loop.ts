@@ -194,7 +194,12 @@ export async function agentLoop(
     }
 
     if (response.stop_reason === 'end_turn') {
-      messages.push({ role: 'assistant', content: response.content });
+      // 推理模型（deepseek-v4-pro 等）有时返回空回合（无 text 也无 tool_calls）。
+      // 不 push 空 assistant 消息：否则下一轮 openai.ts 会把它转成 content:null 发给 API，
+      // 触发 "Invalid assistant message: content or tool_calls must be set" 400。
+      const blocks = (response.content || []) as Array<{ type: string; text?: string }>;
+      const hasText = blocks.some(b => b.type === 'text' && (b.text || '').trim().length > 0);
+      if (hasText) messages.push({ role: 'assistant', content: response.content });
       const text = extractText(response);
       const tc = countToolUses(response);
       onTurnComplete?.(messages, tc);

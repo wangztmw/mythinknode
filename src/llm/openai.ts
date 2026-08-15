@@ -48,6 +48,10 @@ export const openaiProvider: LLMProvider = {
             }));
           }
         }
+        // 跳过空 assistant 消息（既无 content 又无 tool_calls）——否则 DeepSeek 报
+        // "Invalid assistant message: content or tool_calls must be set" 400。
+        // 来源：推理模型在工具结果后可能返回空回合，被 query_loop push 成空 content。
+        if (!entry.content && !entry.tool_calls) continue;
         apiMessages.push(entry);
       } else if (m.role === 'tool') {
         const toolMsg = m as unknown as Record<string, unknown>;
