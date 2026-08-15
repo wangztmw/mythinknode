@@ -126,8 +126,8 @@ export function createCLI() {
   // bracketed paste 状态：粘贴中 = true。粘贴内容里的 \r 是换行，不是回车提交。
   let inPaste = false;
   let closed = false;
-  // 打字防抖定时器：停止输入 100ms 后才全量重绘
-  let echoTimer: ReturnType<typeof setTimeout> | null = null;
+  // 屏幕上当前渲染的输入块行数（从 prompt 行算起）。redraw 前用它上移回输入块第一行。
+  let renderedLines = 1;
 
   // 进入 raw mode（保 IME composition 状态机）
   if (typeof process.stdin.setRawMode === 'function') {
@@ -148,7 +148,7 @@ export function createCLI() {
       const c = chars[i];
       if (c === '\n') { line++; col = 0; continue; }
       const w = charWidth(c);
-      if (col + w >= cols) { line++; col = w; }  // 折行：写满 cols 列后，下一字符就折（实测 Terminal 行为）
+      if (col + w > cols) { line++; col = w; }  // 折行到下一行
       else { col += w; }
     }
     return { line, col };
@@ -162,43 +162,37 @@ export function createCLI() {
     for (const c of chars) {
       if (c === '\n') { lines++; col = 0; continue; }
       const w = charWidth(c);
-      if (col + w >= cols) { lines++; col = w; }
+      if (col + w > cols) { lines++; col = w; }
       else { col += w; }
     }
     return lines;
   };
 
-  /** 全量重绘输入块（可能多行）：\x1b[u 恢复到保存的输入块起点 → \x1b[J 清 → 写 prompt+chars → 光标定位。
-   *  用保存/恢复光标（\x1b[s/\x1b[u）精确定位，替代 renderedLines 上移（上移依赖屏幕光标位置，易漂移）。 */
+  /** 重绘整块（可能多行）：
+   *  上移回输入块第一行 → \r 回行首 → \x1b[J 清屏到末尾 → 写 prompt+全部内容 → 光标定位回 cursor 所在行列 */
   const redraw = () => {
-    if (echoTimer) { clearTimeout(echoTimer); echoTimer = null; }
+    const newLines = contentLines();
     const { line, col } = cursorPos();
-    let out = '\x1b[u';  // 恢复到 readLine 保存的输入块第一行
-    out += `\x1b[J${PROMPT}${chars.join('')}`;
-    // 光标定位：写完后光标在输入块末尾，上移回 cursor 所在行，绝对列定位
-    const inputLines = contentLines();
-    const upToCursor = inputLines - 1 - line;
+    let out = '';
+    // 1. 上移回输入块第一行（屏幕光标可能在最后一行，先回到起始行才能完整清屏）
+    if (renderedLines > 1) out += `\x1b[${renderedLines - 1}A`;
+    // 2. 回行首 + 清屏到末尾 + 重写 prompt + 全部内容
+    out += `\r\x1b[J${PROMPT}${chars.join('')}`;
+    // 3. 光标定位：从内容末尾（最后一行）上移回 cursor 所在行，\r 回该行首，右移 col 列
+    const upToCursor = newLines - 1 - line;
     if (upToCursor > 0) out += `\x1b[${upToCursor}A`;
     out += '\r';
-    out += `\x1b[${col + 1}G`;  // 绝对列定位（1-based）
+    if (col > 0) out += `\x1b[${col}C`;
+    renderedLines = newLines;
     process.stdout.write(out);
-  };
-
-  /** 打字防抖：停止输入 100ms 后才全量重绘（降低重绘频率，不逐字符写） */
-  const scheduleRender = () => {
-    if (echoTimer) clearTimeout(echoTimer);
-    echoTimer = setTimeout(redraw, 100);
   };
 
   const settle = () => {
     if (!resolveLine) return;
-    if (echoTimer) { clearTimeout(echoTimer); echoTimer = null; }
     const text = cleanInput(chars.join('').trim());
-    // 清掉输入块：\x1b[u 恢复到输入块第一行，\x1b[J 清到行尾，\n 换到新行。
-    // 这样后续 thinking/Agent 回复的输出不会覆盖残留的输入内容。
-    process.stdout.write('\x1b[u\x1b[J\n');
     chars = [];
     cursor = 0;
+    renderedLines = 1;
     const resolve = resolveLine;
     resolveLine = null;
     resolve(text);
@@ -263,12 +257,14 @@ export function createCLI() {
     const text = chunk.replace(/\r/g, '\n');
     const newChars = Array.from(text);  // 按 code point 分割
     if (cursor === chars.length) {
-      // 光标在末尾：数据即时更新，防抖后全量重绘（不逐字符写，降重绘频率）
+      // 光标在末尾：追加 O(1)，只 echo 新字符，不重绘整行（超长行不卡的关键）
       chars.push(...newChars);
       cursor = chars.length;
-      scheduleRender();
+      process.stdout.write(text);
+      // 追加可能触发折行，更新渲染行数
+      renderedLines = contentLines();
     } else {
-      // 光标在中间：插入 + 立即全量重绘
+      // 光标在中间：插入 + 重绘整行
       chars.splice(cursor, 0, ...newChars);
       cursor += newChars.length;
       redraw();
@@ -289,9 +285,8 @@ export function createCLI() {
         resolveLine = resolve;
         chars = [];
         cursor = 0;
-        if (echoTimer) { clearTimeout(echoTimer); echoTimer = null; }
-        // 保存"输入块第一行"的光标位置，之后 redraw 用 \x1b[u 恢复到这里精确重绘
-        process.stdout.write('\x1b[s' + PROMPT);
+        renderedLines = 1;
+        process.stdout.write(PROMPT);
       });
     },
 
