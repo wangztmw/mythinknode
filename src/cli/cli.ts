@@ -9,6 +9,7 @@ import type { ProgressEvent, MergedTool } from './monitor/progress.js';
 import { pollEvents } from './monitor/progress.js';
 import { mdToANSI, B, b, C, c } from './render/ansi.js';
 import { safeWrite, displayWidth, charWidth, shouldWrap, wrapLine } from './render/term-wrap.js';
+import { cleanInput, contentLines as geomContentLines, cursorPos as geomCursorPos, foldInput as geomFoldInput } from './input/input-geometry.js';
 
 const THINKING_PHASES = new Set(['analyzing', 'continuing', 'reviewing results', 'summarizing agent results', 'processing']);
 
@@ -32,15 +33,6 @@ function trunc(s: string, maxCols: number): string {
 /** 分辨 thinking 阶段和工具执行阶段的标签 */
 function phaseLabel(label: string): string {
   return THINKING_PHASES.has(label) ? 'Thinking' : label;
-}
-
-/** 清洗粘贴输入里的终端控制序列（ANSI 码 + 回车符），防止污染 LLM 输入 */
-function cleanInput(s: string): string {
-  return s
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')   // ANSI CSI 序列（颜色/光标）
-    .replace(/\x1b\][^\x07]*\x07/g, '')         // OSC 序列
-    .replace(/\x1b[()][A-Z0-9]/g, '')           // 字符集切换
-    .replace(/\r/g, '');                        // 回车符（粘贴时终端换行是 \n，\r 是残留）
 }
 
 function renderProgress(event: ProgressEvent): void {
@@ -150,29 +142,14 @@ export function createCLI() {
   const cursorPos = () => {
     const cols = process.stdout.columns || 80;
     const promptW = displayWidth(PROMPT);
-    let line = 0, col = promptW;
-    for (let i = 0; i < cursor; i++) {
-      const c = chars[i];
-      if (c === '\n') { line++; col = 0; continue; }
-      const w = charWidth(c);
-      if (shouldWrap(col, w, cols)) { line++; col = w; }  // 延迟折行，与终端 autowrap 一致
-      else { col += w; }
-    }
-    return { line, col };
+    return geomCursorPos(chars, cursor, cols, promptW);
   };
 
   /** 内容占用的屏幕行数（从 prompt 行算起），用于重绘时上移清除 */
   const contentLines = () => {
     const cols = process.stdout.columns || 80;
     const promptW = displayWidth(PROMPT);
-    let lines = 1, col = promptW;
-    for (const c of chars) {
-      if (c === '\n') { lines++; col = 0; continue; }
-      const w = charWidth(c);
-      if (shouldWrap(col, w, cols)) { lines++; col = w; }  // 延迟折行，与终端 autowrap 一致
-      else { col += w; }
-    }
-    return lines;
+    return geomContentLines(chars, cols, promptW);
   };
 
   /** 主动折行输入内容：超宽处插 \n，让终端不做软折行（与 cursorPos/contentLines 用同一 shouldWrap，行列一致）。
@@ -181,14 +158,7 @@ export function createCLI() {
   const foldInput = () => {
     const cols = process.stdout.columns || 80;
     const promptW = displayWidth(PROMPT);
-    let col = promptW, out = '';
-    for (const c of chars) {
-      if (c === '\n') { out += '\n'; col = 0; continue; }
-      const w = charWidth(c);
-      if (shouldWrap(col, w, cols)) { out += '\n' + c; col = w; }
-      else { out += c; col += w; }
-    }
-    return out;
+    return geomFoldInput(chars, cols, promptW);
   };
 
   /** 重绘整块（可能多行）：
