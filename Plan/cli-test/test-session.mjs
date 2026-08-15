@@ -1,56 +1,10 @@
-// 用户真实 session 复现测试 —— 用「几乎没改过的原句」验证「无超长行」不变式
-// 用法: node Plan/cli-test/test-session.mjs
+// 用户真实 session 复现测试 —— 链接 term-wrap / input-geometry，验证「无超长行」不变式
+// 用法: node Plan/cli-test/test-session.mjs（需先 npm run build）
 //
 // 目的：把用户触发崩溃的那几轮对话的输入+输出，跑一遍折行逻辑，
 // 断言没有任何一行超过终端宽度（这是 Terminal.app 崩溃的根因）。
-
-const ANSI_END = /^[A-Za-z]$/;
-function charWidth(c) {
-  const code = c.codePointAt(0);
-  if ((code >= 0x4E00 && code <= 0x9FFF) || (code >= 0x3400 && code <= 0x4DBF) || (code >= 0xF900 && code <= 0xFAFF)) return 2;
-  if ((code >= 0x3000 && code <= 0x303F) || (code >= 0xFF01 && code <= 0xFF60) || (code >= 0xFFE0 && code <= 0xFFE6)) return 2;
-  if (code >= 0xAC00 && code <= 0xD7AF) return 2;
-  if (code < 0x20 || (code >= 0x7F && code <= 0x9F)) return 0;
-  return 1;
-}
-function displayWidth(s) {
-  const clean = s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-  let w = 0; for (const c of clean) w += charWidth(c);
-  return w;
-}
-function shouldWrap(col, w, cols) { return col + w > cols; }
-// 复刻 wrapLine（输出折行）
-function wrapLine(line, cols) {
-  if (displayWidth(line) <= cols) return [line];
-  const rows = []; let cur = '', curW = 0; const sgr = [];
-  for (let i = 0; i < line.length; i++) {
-    if (line[i] === '\x1b') {
-      const start = i; i++;
-      if (i < line.length && line[i] === '[') {
-        i++; const seqStart = i;
-        while (i < line.length && !ANSI_END.test(line[i])) i++;
-        const seq = line.slice(seqStart, i);
-        if (line[i] === 'm') { if (seq === '0') sgr.length = 0; else sgr.push(seq); }
-      }
-      cur += line.slice(start, i + 1); continue;
-    }
-    const w = charWidth(line[i]);
-    if (curW + w > cols && curW > 0) { rows.push(cur); cur = sgr.length ? `\x1b[${sgr.join(';')}m` : ''; curW = 0; }
-    cur += line[i]; curW += w;
-  }
-  rows.push(cur); return rows;
-}
-// 复刻 foldInput（输入折行，首行有 promptW 偏移）
-function foldInput(chars, cols, promptW) {
-  let col = promptW, out = '';
-  for (const c of chars) {
-    if (c === '\n') { out += '\n'; col = 0; continue; }
-    const w = charWidth(c);
-    if (shouldWrap(col, w, cols)) { out += '\n' + c; col = w; }
-    else { out += c; col += w; }
-  }
-  return out;
-}
+import { displayWidth, shouldWrap, wrapLine } from '../../dist/cli/render/term-wrap.js';
+import { foldInput } from '../../dist/cli/input/input-geometry.js';
 
 let PASS = 0, FAIL = 0;
 function assert(name, cond) { if (cond) { PASS++; console.log(`  ✅ ${name}`); } else { FAIL++; console.log(`  ❌ ${name}`); } }

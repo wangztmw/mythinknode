@@ -1,61 +1,30 @@
-// CLI 输入层回归测试（数据层，不依赖终端）
-// 用法: node Plan/cli-test/test-suite.mjs
+// CLI 输入层回归测试 —— 链接 input-model 的 applyChunk（纯状态机）
+// 用法: node Plan/cli-test/test-suite.mjs（需先 npm run build）
 //
-// 覆盖最终逻辑：raw mode 自管 stdin + chars 数组 + cursor 光标
+// 覆盖：raw mode 自管 stdin + chars 数组 + cursor 光标
 //   + bracketed paste + 回车提交 + 追加 O(1) + 编辑重绘
+import { applyChunk } from '../../dist/cli/input/input-model.js';
+import { cleanInput } from '../../dist/cli/input/input-geometry.js';
 
 let PASS = 0, FAIL = 0;
 function assert(name, cond) { if (cond) { PASS++; console.log(`  ✅ ${name}`); } else { FAIL++; console.log(`  ❌ ${name}`); } }
 
-function charWidth(c) {
-  const code = c.codePointAt(0);
-  if ((code >= 0x4E00 && code <= 0x9FFF) || (code >= 0x3400 && code <= 0x4DBF) || (code >= 0xF900 && code <= 0xFAFF)) return 2;
-  if ((code >= 0x3000 && code <= 0x303F) || (code >= 0xFF01 && code <= 0xFF60) || (code >= 0xFFE0 && code <= 0xFFE6)) return 2;
-  if (code >= 0xAC00 && code <= 0xD7AF) return 2;
-  if (code < 0x20 || (code >= 0x7F && code <= 0x9F)) return 0;
-  return 1;
-}
-function cleanInput(s) {
-  return s
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-    .replace(/\x1b\][^\x07]*\x07/g, '')
-    .replace(/\x1b[()][A-Z0-9]/g, '')
-    .replace(/\r/g, '');
-}
-
-// ===== 复刻 cli.ts 的输入状态机（数据层）=====
+// 数据层状态机（无 I/O）：驱动 applyChunk，暴露 text/submitted/cursor 供断言
 function createInput() {
-  let chars = [];
-  let cursor = 0;
-  let inPaste = false;
-  let submitted = [];
+  const model = { chars: [], cursor: 0, inPaste: false };
+  const submitted = [];
 
   function feed(chunk) {
-    if (chunk === '\x03') return; // Ctrl+C
-    if (chunk.includes('\x1b[200~')) { inPaste = true; chunk = chunk.replace(/\x1b\[200~/g, ''); if (chunk === '') return; }
-    if (chunk.includes('\x1b[201~')) { inPaste = false; chunk = chunk.replace(/\x1b\[201~/g, ''); if (chunk === '') return; }
-    if (chunk === '\x04') { submitted.push(cleanInput(chars.join('').trim())); chars = []; cursor = 0; return; }
-    if (!inPaste && (chunk === '\r' || chunk === '\n')) {
-      submitted.push(cleanInput(chars.join('').trim()));
-      chars = []; cursor = 0; return;
-    }
-    if (chunk === '\x1b[D') { if (cursor > 0) cursor--; return; }
-    if (chunk === '\x1b[C') { if (cursor < chars.length) cursor++; return; }
-    if (chunk === '\x1b[H' || chunk === '\x1b[1~') { cursor = 0; return; }
-    if (chunk === '\x1b[F' || chunk === '\x1b[4~') { cursor = chars.length; return; }
-    if (chunk === '\x7f' || chunk === '\x08') { if (cursor > 0) { chars.splice(cursor - 1, 1); cursor--; } return; }
-    if (chunk === '\x1b[3~') { if (cursor < chars.length) { chars.splice(cursor, 1); } return; }
-    const text = chunk.replace(/\r/g, '\n');
-    const newChars = Array.from(text);
-    if (cursor === chars.length) { chars.push(...newChars); cursor = chars.length; }
-    else { chars.splice(cursor, 0, ...newChars); cursor += newChars.length; }
+    const effect = applyChunk(model, chunk);
+    if (effect.exit) return;
+    if (effect.submit != null) { submitted.push(effect.submit); model.chars = []; model.cursor = 0; }
   }
 
   return {
     feed,
-    get text() { return cleanInput(chars.join('').trim()); },
+    get text() { return cleanInput(model.chars.join('').trim()); },
     get submitted() { return submitted; },
-    get cursor() { return cursor; },
+    get cursor() { return model.cursor; },
   };
 }
 
@@ -91,7 +60,6 @@ console.log('\n=== CLI 输入层回归测试（最终逻辑）===\n');
   const it = createInput();
   const raw = '第一段\r\r第二段\r\r第三段';
   const pieces = raw.split('\r');
-  // 模拟每个 \r 都被单独分帧
   for (let i = 0; i < pieces.length; i++) {
     if (pieces[i].length > 0) it.feed(pieces[i]);
     if (i < pieces.length - 1) it.feed('\r');

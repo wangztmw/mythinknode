@@ -10,7 +10,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/Mythinknode.js",
-    "dev": "npx tsx src/Mythinknode.ts"
+    "dev": "npx tsx src/Mythinknode.ts",
+    "test": "npm run build && node Plan/cli-test/test-suite.mjs && node Plan/cli-test/test-wrap-line.mjs && node Plan/cli-test/test-wrap-model.mjs && node Plan/cli-test/test-wrap.mjs && node Plan/cli-test/test-session.mjs && node Plan/cli-test/test-ansi.mjs && node Plan/cli-test/test-empty-assistant.mjs"
   },
   "dependencies": {
     "zod": "~4.4.0"
