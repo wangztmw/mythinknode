@@ -2,23 +2,15 @@
  * Markdown → ANSI 终端格式化
  * 零外部依赖，非 TTY 自动降级
  */
+import { charWidth } from './term-wrap.js';
 
 const C = '\x1b[36m';
 const B = '\x1b[1m';   const b = '\x1b[22m';
 const D = '\x1b[2m';   const d = '\x1b[22m';
 const G = '\x1b[90m';  const c = '\x1b[39m';
 
-// CJK 双宽感知的字符串长度（用于表格对齐等）
-function charW(c: string): number {
-  const code = c.codePointAt(0)!;
-  if ((code >= 0x4E00 && code <= 0x9FFF) || (code >= 0x3400 && code <= 0x4DBF) ||
-      (code >= 0xF900 && code <= 0xFAFF) || (code >= 0x3000 && code <= 0x303F) ||
-      (code >= 0xFF01 && code <= 0xFF60) || (code >= 0xFFE0 && code <= 0xFFE6) ||
-      (code >= 0xAC00 && code <= 0xD7AF)) return 2;
-  if (code < 0x20 || (code >= 0x7F && code <= 0x9F)) return 0;
-  return 1;
-}
-function visualLen(s: string): number { let w = 0; for (const c of s) w += charW(c); return w; }
+// CJK 双宽感知的字符串长度（用于表格对齐等）—— 复用 term-wrap 的唯一宽度表
+function visualLen(s: string): number { let w = 0; for (const c of s) w += charWidth(c); return w; }
 function visualPad(s: string, n: number): string {
   const w = visualLen(s);
   return w >= n ? s : s + ' '.repeat(n - w);
