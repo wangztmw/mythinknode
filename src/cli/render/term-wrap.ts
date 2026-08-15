@@ -46,7 +46,7 @@ export function shouldWrap(col: number, w: number, cols: number): boolean {
  * 把一行逻辑文本主动折成多个可视行（每行显示宽 ≤ cols），ANSI SGR 跨行保留。
  * 折行点与终端延迟 autowrap 一致（写满 cols 后下一个字符才折）。
  *
- * 用于 safeWrite：保证写入终端的每一行都不超过终端宽度，避免超长单行触发
+ * 用于 ScreenState.writeLines：保证写入终端的每一行都不超过终端宽度，避免超长单行触发
  * Terminal.app SwiftUI 布局递归崩溃（malloc corruption）。
  */
 export function wrapLine(line: string, cols: number): string[] {
@@ -79,21 +79,4 @@ export function wrapLine(line: string, cols: number): string[] {
   }
   rows.push(cur);
   return rows;
-}
-
-/**
- * 写入 stdout，对超长行主动折行（插入 \n），保证没有任何一行超出终端宽度。
- *
- * 治本关键：Terminal.app 的 SwiftUI 渲染对「超长单行」布局递归不收敛 → nano malloc zone
- * 腐败 → SIGTRAP/SIGBUS 崩溃。只要不输出超长行，Terminal 就不崩（与 Claude Code 的
- * Ink/Yoga 自动折行同等保障）。仅用于 LLM 输出等可能产生超长行的路径；readline/进度/banner
- * 等短输出不经此函数。
- */
-export function safeWrite(text: string): void {
-  const width = process.stdout.columns || 120;
-  for (const line of text.split('\n')) {
-    for (const row of wrapLine(line, width)) {
-      process.stdout.write(row + '\n');
-    }
-  }
 }

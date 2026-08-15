@@ -1,12 +1,11 @@
 /**
  * 输入缓冲 — 自建行编辑器：raw mode + 自管 stdin + bracketed paste + 光标编辑 + 折行 echo。
- * 与渲染器（renderer）完全解耦；所有终端写入经 process.stdout.write（S6 统一到 ScreenState）。
+ * 与渲染器（renderer）完全解耦；所有终端写入经 ScreenState（单一屏幕模型）。
  */
-import { C, B, b, c } from '../render/ansi.js';
-import { displayWidth, charWidth, shouldWrap } from '../render/term-wrap.js';
-import { cleanInput, contentLines as geomContentLines, cursorPos as geomCursorPos, foldInput as geomFoldInput } from './input-geometry.js';
+import { cleanInput } from './input-geometry.js';
+import type { ScreenState } from '../render/screen-state.js';
 
-export function createInputBuffer() {
+export function createInputBuffer(ss: ScreenState) {
   // 自建内容管理：raw mode + 自管 stdin，彻底绕开 readline。
   //
   // 为什么不用 readline：
@@ -15,7 +14,6 @@ export function createInputBuffer() {
   //
   // raw mode 本身就能保 IME（豆包输入法实测正常），readline 的逐字符回显才是卡死根源。
   // 自管方案 = raw mode（保 IME）+ 追加式 echo O(1)（不重绘整行）+ 回车提交 + 光标编辑。
-  const PROMPT = `${C}${B}mythinknode${b}${c} ${B}>>>${b} `;
 
   let resolveLine: ((value: string) => void) | null = null;
   // 字符数组（按 code point 分割，正确处理中文双宽 + emoji 代理对）
@@ -25,8 +23,6 @@ export function createInputBuffer() {
   // bracketed paste 状态：粘贴中 = true。粘贴内容里的 \r 是换行，不是回车提交。
   let inPaste = false;
   let closed = false;
-  // 屏幕上当前渲染的输入块行数（从 prompt 行算起）。redraw 前用它上移回输入块第一行。
-  let renderedLines = 1;
 
   // 进入 raw mode（保 IME composition 状态机）
   if (typeof process.stdin.setRawMode === 'function') {
@@ -35,49 +31,12 @@ export function createInputBuffer() {
   process.stdin.setEncoding('utf8');
   // 启用 bracketed paste：让终端用 \x1b[200~ 和 \x1b[201~ 包裹粘贴内容，
   // 从而可靠区分"粘贴内容里的换行"和"用户按的回车提交"。
-  process.stdout.write('\x1b[?2004h');
+  ss.emit('\x1b[?2004h');
 
-  /** 光标所在的行和列（考虑 wrap + 显式 \n + 双宽）。
-   *  返回 { line, col }：line 从 0 起（第 0 行是 prompt 所在行），col 是该行的显示列。 */
-  const cursorPos = () => {
-    const cols = process.stdout.columns || 80;
-    const promptW = displayWidth(PROMPT);
-    return geomCursorPos(chars, cursor, cols, promptW);
-  };
-
-  /** 内容占用的屏幕行数（从 prompt 行算起），用于重绘时上移清除 */
-  const contentLines = () => {
-    const cols = process.stdout.columns || 80;
-    const promptW = displayWidth(PROMPT);
-    return geomContentLines(chars, cols, promptW);
-  };
-
-  /** 主动折行输入内容：超宽处插 \n，让终端不做软折行（与 cursorPos/contentLines 用同一 shouldWrap，行列一致）。
-   *  这是「无超长行」系统级保证的输入侧：裸 echo 会让终端把超长输入软折成超长逻辑行，
-   *  触发 Terminal 布局递归 → 缓冲区腐败（表现是缺字）→ 继续打字 SIGBUS 崩溃。 */
-  const foldInput = () => {
-    const cols = process.stdout.columns || 80;
-    const promptW = displayWidth(PROMPT);
-    return geomFoldInput(chars, cols, promptW);
-  };
-
-  /** 重绘整块（可能多行）：
-   *  上移回输入块第一行 → \r 回行首 → \x1b[J 清屏到末尾 → 写 prompt+折行内容 → 光标定位回 cursor 所在行列 */
+  /** 重绘整块（可能多行）—— 委托 ScreenState，其内部用 inputRows 上移回输入块第一行 */
   const redraw = () => {
-    const newLines = contentLines();
-    const { line, col } = cursorPos();
-    let out = '';
-    // 1. 上移回输入块第一行（屏幕光标可能在最后一行，先回到起始行才能完整清屏）
-    if (renderedLines > 1) out += `\x1b[${renderedLines - 1}A`;
-    // 2. 回行首 + 清屏到末尾 + 重写 prompt + 折行后的全部内容（不裸写 chars，避免超长行）
-    out += `\r\x1b[J${PROMPT}${foldInput()}`;
-    // 3. 光标定位：从内容末尾（最后一行）上移回 cursor 所在行，\r 回该行首，右移 col 列
-    const upToCursor = newLines - 1 - line;
-    if (upToCursor > 0) out += `\x1b[${upToCursor}A`;
-    out += '\r';
-    if (col > 0) out += `\x1b[${col}C`;
-    renderedLines = newLines;
-    process.stdout.write(out);
+    const { line, col } = ss.cursorPos(chars, cursor);
+    ss.rewriteInput(ss.foldInput(chars), ss.contentLines(chars), line, col);
   };
 
   const settle = () => {
@@ -85,7 +44,6 @@ export function createInputBuffer() {
     const text = cleanInput(chars.join('').trim());
     chars = [];
     cursor = 0;
-    renderedLines = 1;
     const resolve = resolveLine;
     resolveLine = null;
     resolve(text);
@@ -94,7 +52,7 @@ export function createInputBuffer() {
   process.stdin.on('data', (chunk: string) => {
     if (closed) return;
     // Ctrl+C (0x03) 退出
-    if (chunk === '\x03') { process.stdout.write('\nBye.\n'); process.exit(0); }
+    if (chunk === '\x03') { ss.emit('\nBye.\n'); process.exit(0); }
     // bracketed paste 开始标记：进入粘贴模式，后面的 \r 都是内容换行
     if (chunk.includes('\x1b[200~')) {
       inPaste = true;
@@ -113,7 +71,7 @@ export function createInputBuffer() {
     // 回车提交：仅在非粘贴模式下，单独的 \r 或 \n chunk 才是回车
     if (!inPaste && (chunk === '\r' || chunk === '\n')) {
       settle();
-      process.stdout.write('\n');
+      ss.submitInput();
       return;
     }
     // 方向键左/右（转义序列 \x1b[D / \x1b[C）—— 移动光标，重绘
@@ -153,19 +111,10 @@ export function createInputBuffer() {
       // 光标在末尾：追加 O(1) 折行 echo——从当前列开始折叠新 chunk（超宽插 \n），
       // 一次写入、不触发 \x1b[J（高频 \x1b[J 会腐败 nano malloc，输入法一打字就 SIGTRAP），
       // 也不软折行（软折行超长会触发 Terminal 渲染 bug 导致缺字）。两者兼顾。
-      const cols = process.stdout.columns || 80;
-      const { col: startCol } = cursorPos();  // 新字符前的光标列（含 prompt 宽）
+      const { col: startCol } = ss.cursorPos(chars, cursor);  // 新字符前的光标列（含 prompt 宽）
       chars.push(...newChars);
       cursor = chars.length;
-      let folded = '', col = startCol;
-      for (const c of newChars) {
-        if (c === '\n') { folded += '\n'; col = 0; continue; }
-        const w = charWidth(c);
-        if (shouldWrap(col, w, cols)) { folded += '\n' + c; col = w; }
-        else { folded += c; col += w; }
-      }
-      process.stdout.write(folded);  // 一次写入，低频
-      renderedLines = contentLines();
+      ss.appendInput(ss.foldInput(newChars, startCol), ss.contentLines(chars));
     } else {
       // 光标在中间：插入 + 折行重绘（编辑操作低频，可接受）
       chars.splice(cursor, 0, ...newChars);
@@ -188,19 +137,18 @@ export function createInputBuffer() {
         resolveLine = resolve;
         chars = [];
         cursor = 0;
-        renderedLines = 1;
-        process.stdout.write(PROMPT);
+        ss.printPrompt();
       });
     },
 
     close(): void {
       closed = true;
       // 关闭 bracketed paste + 恢复 raw mode，避免退出后终端状态残留
-      process.stdout.write('\x1b[?2004l');
+      ss.emit('\x1b[?2004l');
       if (typeof process.stdin.setRawMode === 'function') {
         try { process.stdin.setRawMode(false); } catch { /* 忽略 */ }
       }
-      process.stdout.write('Bye.\n');
+      ss.emit('Bye.\n');
       process.exit(0);
     },
   };
