@@ -8,6 +8,7 @@ import { STYLE_BOLD } from './cell-grid.js';
 export function patchesToANSI(patches: Patch[]): string {
   let out = '';
   let bold = false;
+  let color = 0;
   for (const p of patches) {
     out += `\x1b[${p.row + 1};${p.col + 1}H`;
     for (const cell of p.cells) {
@@ -17,9 +18,14 @@ export function patchesToANSI(patches: Patch[]): string {
         out += wantBold ? '\x1b[1m' : '\x1b[22m';
         bold = wantBold;
       }
+      if (cell.color !== color) {
+        out += cell.color === 0 ? '\x1b[39m' : `\x1b[${cell.color}m`;
+        color = cell.color;
+      }
       out += cell.ch;
     }
   }
   if (bold) out += '\x1b[22m';
+  if (color !== 0) out += '\x1b[39m';
   return out;
 }

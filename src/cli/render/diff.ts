@@ -15,12 +15,12 @@ export function diff(prev: CellGrid, next: CellGrid): Patch[] {
     let c = 0;
     while (c < next.cols) {
       const a = prev.get(r, c), b = next.get(r, c);
-      if (a.ch === b.ch && a.style === b.style) { c++; continue; }
+      if (a.ch === b.ch && a.style === b.style && a.color === b.color) { c++; continue; }
       const start = c;
       const cells: Cell[] = [];
       while (c < next.cols) {
         const pa = prev.get(r, c), pb = next.get(r, c);
-        if (pa.ch === pb.ch && pa.style === pb.style) break;
+        if (pa.ch === pb.ch && pa.style === pb.style && pa.color === pb.color) break;
         cells.push({ ...pb });
         c++;
       }
