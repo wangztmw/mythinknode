@@ -31,7 +31,7 @@ export class ScreenState {
     this.sb.setPrompt(prompt);
   }
 
-  get cols(): number { return this.sb.contentCols; }
+  get cols(): number { return this.sb.cols; }
   get rows(): number { return this.sb.rows; }
   get scrolledBack(): boolean { return this.sb.scrolledBack; }
 
