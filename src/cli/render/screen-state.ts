@@ -31,7 +31,7 @@ export class ScreenState {
     this.sb.setPrompt(prompt);
   }
 
-  get cols(): number { return this.sb.cols; }
+  get cols(): number { return this.sb.contentCols; }
   get rows(): number { return this.sb.rows; }
   get scrolledBack(): boolean { return this.sb.scrolledBack; }
 
@@ -137,8 +137,10 @@ export function createAltDriver(ss: ScreenState): InputDriver {
   return {
     consumeChunk(chunk: string): boolean {
       const page = Math.max(1, ss.rows - 1);
-      if (chunk === '\x1b[5~') { ss.scrollBy(page); return true; }   // PgUp 向上
-      if (chunk === '\x1b[6~') { ss.scrollBy(-page); return true; }  // PgDn 向下
+      if (chunk === '\x1b[5~') { ss.scrollBy(page); return true; }   // PgUp 向上（整页）
+      if (chunk === '\x1b[6~') { ss.scrollBy(-page); return true; }  // PgDn 向下（整页）
+      if (chunk === '\x1b[A') { ss.scrollBy(3); return true; }       // ↑ 回滚 3 行（丝滑）
+      if (chunk === '\x1b[B') { ss.scrollBy(-3); return true; }      // ↓ 回底 3 行
       if (ss.scrolledBack) ss.scrollToBottom();  // 非滚动输入先回底
       return false;
     },

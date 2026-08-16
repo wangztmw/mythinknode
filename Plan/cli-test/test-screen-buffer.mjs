@@ -78,11 +78,11 @@ console.log('\n=== ScreenBuffer 回归 ===\n');
   sb.scrollBy(3);   // 回滚 3 行
   snap = sb.snapshot();
   assert('回滚后：输出上移', snap[0] === '1' && snap[3] === '4');
-  assert('回滚后：指示行在输入块上方', snap[4].includes('已回滚') && snap[5] === 'P>');
+  assert('回滚后：指示行在输入块上方', snap[4].includes('PgDn回底') && snap[5] === 'P>');
 
   sb.scrollToBottom();
   snap = sb.snapshot();
-  assert('回到底：指示行消失', snap[0] === '4' && !snap.some((r) => r.includes('已回滚')) && snap[5] === 'P>');
+  assert('回到底：指示行消失', snap[0] === '4' && !snap.some((r) => r.includes('PgDn回底')) && snap[5] === 'P>');
 }
 
 // 8. 回滚到最顶：maxOffset 受输入块+指示行约束

@@ -14,8 +14,9 @@ export interface Cell {
 
 export const STYLE_BOLD = 1;
 
-/** 解析 ANSI SGR（bold + 前景色，按序应用），把带样式的文本写入网格。返回下一个列号。 */
-export function writeAnsiText(grid: CellGrid, row: number, col: number, text: string): number {
+/** 解析 ANSI SGR（bold + 前景色，按序应用），把带样式的文本写入网格。返回下一个列号。
+ *  maxCols 限制写入宽度（默认 grid.cols；备用屏最右一列留给滚动条，内容用 cols-1）。 */
+export function writeAnsiText(grid: CellGrid, row: number, col: number, text: string, maxCols: number = grid.cols): number {
   let style = 0;
   let color = 0;
   let c = col;
@@ -35,7 +36,7 @@ export function writeAnsiText(grid: CellGrid, row: number, col: number, text: st
     }
     const ch = text[i];
     const w = charWidth(ch);
-    if (c + w > grid.cols) break;
+    if (c + w > maxCols) break;
     grid.set(row, c, ch, style, color);
     if (w === 2) grid.set(row, c + 1, '', style, color);
     c += w;

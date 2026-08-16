@@ -40,12 +40,15 @@ export class ScreenBuffer {
     this.out = out;
   }
 
+  /** 内容可用宽度（最右一列留给滚动条）。 */
+  get contentCols(): number { return this.cols - 1; }
+
   // ---- 输出（scrollback）----
 
   /** 追加一个原始逻辑行（进 rawLines，同时折行进 wrappedLines 缓存）。 */
   private _pushRawLine(line: string): void {
     this.rawLines.push(line);
-    for (const row of wrapLine(line, this.cols)) this.wrappedLines.push(row);
+    for (const row of wrapLine(line, this.contentCols)) this.wrappedLines.push(row);
   }
 
   /** 追加输出：按 \n 拆成原始行进 scrollback。回滚状态下同步偏移，保持视口钉在原内容。 */
@@ -137,7 +140,7 @@ export class ScreenBuffer {
   private _rebuildWrapped(): void {
     this.wrappedLines = [];
     for (const line of this.rawLines) {
-      for (const row of wrapLine(line, this.cols)) this.wrappedLines.push(row);
+      for (const row of wrapLine(line, this.contentCols)) this.wrappedLines.push(row);
     }
   }
 
@@ -179,7 +182,7 @@ export class ScreenBuffer {
       for (let k = 0; k < inputVisible; k++) {
         const srcLine = startLine + k;
         const text = srcLine === 0 ? this.prompt + (lines[srcLine] ?? '') : (lines[srcLine] ?? '');
-        writeAnsiText(grid, inputTop + k, 0, text);
+        writeAnsiText(grid, inputTop + k, 0, text, this.contentCols);
       }
       this.cursorScreen = { row: inputTop + (this.cursor.line - startLine), col: this.cursor.col };
     }
@@ -187,7 +190,7 @@ export class ScreenBuffer {
     // 2. 回滚指示行：输入块上方
     if (indicatorRows) {
       const indRow = inputTop - 1;
-      if (indRow >= 0) writeAnsiText(grid, indRow, 0, `↑ 已回滚 ${this.scrollOffset} 行 · PgDn 回底`);
+      if (indRow >= 0) writeAnsiText(grid, indRow, 0, `↑${this.scrollOffset}行 PgDn回底`, this.contentCols);
     }
 
     // 3. 输出 + 状态行：占据 [0, contentEnd) 行，顶部对齐
@@ -199,9 +202,18 @@ export class ScreenBuffer {
       for (let r = 0; r < visible; r++) {
         const src = start + r;
         const text = src < this.wrappedLines.length ? this.wrappedLines[src] : this.status!;
-        writeAnsiText(grid, r, 0, text);
+        writeAnsiText(grid, r, 0, text, this.contentCols);
       }
       this.endRow = Math.min(visible, this.rows - 1);  // 内容结束的下一行（0-based，钳到末行）
+    }
+
+    // 4. 滚动条（进度条）：内容区最右一列，█ 为滑块，│ 为轨道
+    const maxOffset = this._maxScrollOffset();
+    if (maxOffset > 0 && contentEnd > 0) {
+      const thumbRow = Math.round((1 - this.scrollOffset / maxOffset) * (contentEnd - 1));
+      for (let r = 0; r < contentEnd; r++) {
+        grid.set(r, this.cols - 1, r === thumbRow ? '█' : '│', 0, 0);
+      }
     }
 
     return grid;
@@ -225,12 +237,12 @@ export class ScreenBuffer {
     this.prevViewport = this.viewport.clone();
   }
 
-  /** 调试/测试：返回 viewport 每行的显示内容（去样式、去尾部空格）。 */
+  /** 调试/测试：返回 viewport 每行的显示内容（去样式、去尾部空格、去最右滚动条列）。 */
   snapshot(): string[] {
     const rows: string[] = [];
     for (let r = 0; r < this.rows; r++) {
       let s = '';
-      for (let c = 0; c < this.cols; c++) {
+      for (let c = 0; c < this.cols - 1; c++) {
         const cell = this.viewport.get(r, c);
         if (cell.ch !== '') s += cell.ch;
       }
