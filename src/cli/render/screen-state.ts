@@ -54,9 +54,10 @@ export class ScreenState {
 
   // ---- 终端模式原语（不参与 grid，直接写 stdout） ----
 
-  // 备用屏 + 鼠标滚轮上报（SGR 扩展模式），让触控板/滚轮能驱动自实现 scrollback
-  enterAltScreen(): void { this.emit('\x1b[?1049h\x1b[?1000h\x1b[?1006h'); }
-  leaveAltScreen(): void { this.emit('\x1b[?1006l\x1b[?1000l\x1b[?1049l'); }
+  // 备用屏 + 替代滚动模式（\x1b[?1007h）：滚轮发送方向键而非鼠标事件，
+  // 这样滚轮能驱动自实现 scrollback，同时鼠标点击不被拦截、文本可正常选中。
+  enterAltScreen(): void { this.emit('\x1b[?1049h\x1b[?1007h'); }
+  leaveAltScreen(): void { this.emit('\x1b[?1007l\x1b[?1049l'); }
 
   /** 终端尺寸变化：清屏 + 更新网格 + 全量重绘。 */
   onResize(): void {

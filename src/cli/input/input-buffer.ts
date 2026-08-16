@@ -37,18 +37,12 @@ export function createInputBuffer(ss: ScreenState) {
   process.stdin.on('data', (chunk: string) => {
     if (closed) return;
 
-    // 自实现 scrollback（B6）：PgUp/PgDn + 鼠标滚轮 滚动输出，不进输入模型
+    // 自实现 scrollback（B6）：PgUp/PgDn + 滚轮（替代滚动模式发方向键）滚动输出
     const page = Math.max(1, ss.rows - 1);
-    // SGR 鼠标滚轮：\x1b[<b;x;yM（b=64 上滚 / 65 下滚）
-    const wheel = /^\x1b\[<(\d+);\d+;\d+[Mm]/.exec(chunk);
-    if (wheel) {
-      const btn = parseInt(wheel[1]);
-      if (btn === 64) ss.scrollBy(page);    // 滚轮上 → 看更早
-      else if (btn === 65) ss.scrollBy(-page);  // 滚轮下 → 看更近
-      return;  // 其他鼠标事件（点击等）忽略
-    }
     if (chunk === '\x1b[5~') { ss.scrollBy(page); return; }   // PgUp 向上
     if (chunk === '\x1b[6~') { ss.scrollBy(-page); return; }  // PgDn 向下
+    if (chunk === '\x1b[A') { ss.scrollBy(page); return; }    // 滚轮上（替代滚动发 ↑）→ 看更早
+    if (chunk === '\x1b[B') { ss.scrollBy(-page); return; }   // 滚轮下（发 ↓）→ 看更近
     // 非滚动输入：若在回滚态，先回到底（打字/编辑/提交都先回到最新输出）
     if (ss.scrolledBack) ss.scrollToBottom();
 

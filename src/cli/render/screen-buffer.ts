@@ -26,6 +26,7 @@ export class ScreenBuffer {
   private inputActive = false;          // 输入块是否显示
   private cursor = { line: 0, col: 0 }; // 输入光标（相对输入块，line 0 = prompt 行）
   private cursorScreen = { row: 0, col: 0 };  // 光标在整屏的坐标（compose 时算）
+  private endRow = 0;                          // 内容结束的下一行（输入块非活跃时，光标停在此）
   private out: (s: string) => void;
   private viewport: CellGrid;           // 当前帧
   private prevViewport: CellGrid;       // 上一帧（已 flush）
@@ -190,6 +191,7 @@ export class ScreenBuffer {
 
     // 3. 输出 + 状态行：占据 [0, contentEnd) 行，顶部对齐
     const contentEnd = Math.max(0, inputTop - indicatorRows);
+    this.endRow = 0;
     if (contentEnd > 0) {
       const visible = Math.min(contentEnd, totalContent);
       const start = Math.max(0, totalContent - contentBottomWindow - this.scrollOffset);
@@ -198,6 +200,7 @@ export class ScreenBuffer {
         const text = src < this.wrappedLines.length ? this.wrappedLines[src] : this.status!;
         writeAnsiText(grid, r, 0, text);
       }
+      this.endRow = Math.min(visible, this.rows - 1);  // 内容结束的下一行（0-based，钳到末行）
     }
 
     return grid;
@@ -209,8 +212,13 @@ export class ScreenBuffer {
   flush(): void {
     const patches = diff(this.prevViewport, this.viewport);
     let out = patchesToANSI(patches);
-    if (this.inputActive) {
-      out += `\x1b[${this.cursorScreen.row + 1};${this.cursorScreen.col + 1}H`;
+    if (patches.length > 0) {
+      if (this.inputActive) {
+        out += `\x1b[${this.cursorScreen.row + 1};${this.cursorScreen.col + 1}H`;
+      } else {
+        // 输入块非活跃（提交后/思考中）：光标移到内容下一行（用户要的「回车后移到下一行」）
+        out += `\x1b[${this.endRow + 1};1H`;
+      }
     }
     if (out.length > 0) this.out(out);
     this.prevViewport = this.viewport.clone();
