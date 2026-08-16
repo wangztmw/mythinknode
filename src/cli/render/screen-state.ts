@@ -12,12 +12,18 @@
 import { displayWidth, wrapLine } from './term-wrap.js';
 import { contentLines as geomContentLines, cursorPos as geomCursorPos, foldInput as geomFoldInput } from '../input/input-geometry.js';
 
+const THROTTLE_TICK_MS = 16;   // 对齐终端 ~60fps 帧
+const THROTTLE_LINES_PER_TICK = 10;  // 每帧最多写这么多行，摊开滚动爆发
+
 export class ScreenState {
   private prompt: string;
   private promptWidth: number;
   private _inputRows = 0;
   private _statusActive = false;
   private _statusLine = '';  // 当前状态行内容，供下次 overwriteStatus 做前缀 diff
+  // 节流：大量 \n 一次性写入会触发 Terminal 原生滚动爆发（nano 崩溃源），摊到多帧
+  private _pendingLines: string[] = [];
+  private _pendingTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(prompt: string, _opts?: { rows?: number; cols?: number }) {
     this.prompt = prompt;
@@ -36,9 +42,37 @@ export class ScreenState {
 
   emit(raw: string): void { process.stdout.write(raw); }
 
+  // ---- 滚动爆发节流（输出 + 长输入折行共用） ----
+
+  /** 把多行输出入队，摊到每 tick 写 N 行。 */
+  private _throttledWrite(lines: string[]): void {
+    this._pendingLines.push(...lines);
+    if (!this._pendingTimer) this._pendingTimer = setInterval(() => this._flushPending(), THROTTLE_TICK_MS);
+  }
+
+  private _flushPending(): void {
+    if (this._pendingLines.length === 0) { this._stopPending(); return; }
+    this.emit(this._pendingLines.splice(0, THROTTLE_LINES_PER_TICK).join('\n') + '\n');
+    if (this._pendingLines.length === 0) this._stopPending();
+  }
+
+  private _stopPending(): void {
+    if (this._pendingTimer) { clearInterval(this._pendingTimer); this._pendingTimer = null; }
+  }
+
+  /** 直写（状态行/输入）前 flush 节流缓冲，保证顺序。 */
+  private _flushPendingSync(): void {
+    this._stopPending();
+    if (this._pendingLines.length > 0) {
+      this.emit(this._pendingLines.join('\n') + '\n');
+      this._pendingLines = [];
+    }
+  }
+
   // ---- 输入块原语 ----
 
   printPrompt(): void {
+    this._flushPendingSync();  // 先把节流的输出写完，prompt 才接得上
     // I2：若有活状态行悬挂，先收尾
     if (this._statusActive) this.emit('\n');
     this.emit(this.prompt);
@@ -60,14 +94,22 @@ export class ScreenState {
     this.emit(out);
   }
 
-  /** O(1) 追加 echo（光标在末尾时打字）：只写新 chunk，不触发 \x1b[J、不软折行。 */
+  /** O(1) 追加 echo（光标在末尾时打字）：只写新 chunk，不触发 \x1b[J、不软折行。
+   *  长粘贴会折成多行 → 大量 \n 滚动爆发，走节流。 */
   appendInput(foldedChunk: string, newRows: number): void {
-    this.emit(foldedChunk);
+    const lines = foldedChunk.split('\n');
+    if (lines.length > 8) {
+      // 折成很多行（长粘贴）：节流，摊开滚动爆发
+      this._throttledWrite(lines);
+    } else {
+      this.emit(foldedChunk);
+    }
     this._inputRows = newRows;
   }
 
   /** 提交：写 \n 收尾输入块（原生屏语义：输入行留在 scrollback 历史里）。 */
   submitInput(_rawText: string): void {
+    this._flushPendingSync();
     this.emit('\n');
     this._inputRows = 0;
     this._setStatusActive(false);
@@ -77,6 +119,7 @@ export class ScreenState {
 
   /** 写一条新状态行（thinking_start）。leadingNewline 时先垫一空行。 */
   beginStatus(content: string, leadingNewline: boolean): void {
+    this._flushPendingSync();  // 状态行要接在上一段输出之后
     this._statusLine = content;
     this._setStatusActive(true);
     this.emit(`${leadingNewline ? '\n' : ''}${content}\x1b[K`);
@@ -115,26 +158,21 @@ export class ScreenState {
     this._statusLine = '';
   }
 
-  /** 写多行输出：先收尾活状态行，再逐行硬折行写（无超长行，避免软折行缺字）。 */
+  /** 写多行输出：逐行硬折行（无超长行，避免软折行缺字），节流摊开滚动爆发。 */
   writeLines(text: string): void {
-    if (this._statusActive) this.emit('\n');  // I2
-    let out = '';
+    if (this._statusActive) this.emit('\n');  // I2：收尾活状态行（正常流程 endStatus 已收尾，这里是防御）
+    const rows: string[] = [];
     for (const line of text.split('\n')) {
-      for (const row of wrapLine(line, this.cols)) out += row + '\n';
+      for (const row of wrapLine(line, this.cols)) rows.push(row);
     }
-    this.emit(out);
+    this._throttledWrite(rows);
     this._setStatusActive(false);
   }
 
-  /** 工具展示：首行 \r 覆盖 tick 的状态行（"● Bash (0.0s)"），其余行正常换行。 */
+  /** 工具展示：首行 \r 覆盖 tick 的状态行（"● Bash (0.0s)"），其余行正常换行。节流。 */
   displayTools(lines: string[]): void {
-    let out = '';
-    let first = true;
-    for (const line of lines) {
-      out += `${first ? '\r' : ''}${line}\x1b[K\n`;
-      first = false;
-    }
-    this.emit(out);
+    const rows = lines.map((line, i) => `${i === 0 ? '\r' : ''}${line}\x1b[K`);
+    this._throttledWrite(rows);
     this._setStatusActive(false);
     this._statusLine = '';
   }

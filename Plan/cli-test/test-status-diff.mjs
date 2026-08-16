@@ -83,13 +83,13 @@ console.log('\n=== 状态行 diff 回归 ===\n');
   assert('endStatus：\r 覆盖 + \n 收尾', c.out.endsWith('\n') && c.out.includes('\r'));
 }
 
-// 5. writeLines 批量写：多行只触发一次 emit
+// 5. writeLines 节流：多行同步不写（异步摊开滚动爆发）
 {
-  let calls = 0;
+  let sync = 0;
   const ss = new ScreenState('P> ');
-  ss.emit = () => { calls++; };
+  ss.emit = () => { sync++; };
   ss.writeLines('line1\nline2\nline3\nline4\nline5');
-  assert('writeLines 5 行只触发 1 次 emit（批量写）', calls === 1);
+  assert('writeLines 5 行：同步不写（节流摊开）', sync === 0);
 }
 
 console.log(`\n=== 结果: ${PASS} 通过, ${FAIL} 失败 ===\n`);
