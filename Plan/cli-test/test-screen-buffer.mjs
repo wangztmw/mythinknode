@@ -128,5 +128,21 @@ console.log('\n=== ScreenBuffer 回归 ===\n');
   assert('resize 重折行：每行 ≤ 新宽度', snap.every((r) => [...r].reduce((w, c) => w + (/[一-鿿]/.test(c) ? 2 : 1), 0) <= 12));
 }
 
+// 12. 滚动条：回滚时最右列画细滑块，回底后清除
+{
+  let out = '';
+  const sb = new ScreenBuffer(6, 20, (s) => { out += s; });
+  sb.writeOutput('1\n2\n3\n4\n5\n6\n7\n8');
+  sb.flush();
+  out = '';
+  sb.scrollBy(3);   // 回滚（clamp 到 maxOffset=2）
+  sb.flush();
+  assert('回滚时滚动条滑块出现（▐）', out.includes('▐'));
+  out = '';
+  sb.scrollToBottom();
+  sb.flush();
+  assert('回底后滑块清除', !out.includes('▐'));
+}
+
 console.log(`\n=== 结果: ${PASS} 通过, ${FAIL} 失败 ===\n`);
 process.exit(FAIL > 0 ? 1 : 0);

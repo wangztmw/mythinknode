@@ -227,6 +227,19 @@ export class ScreenBuffer {
       }
     }
 
+    // 4. 滚动条：最右一列画细滑块（仅回滚时显示，浮层覆盖内容右缘，不预留列）。
+    //    长度 ∝ 可见/总量，位置 ∝ 回滚比例（scrollOffset=0 贴底→滑块在底，=max 在顶）。
+    //    贴底无回滚时不画（复刻原生「内容不足时滚动条消失」）。
+    const maxOffset = this._maxScrollOffset();
+    if (this.scrollOffset > 0 && contentEnd > 0) {
+      const total = this.wrappedLines.length + (this.hasStatus ? 1 : 0);
+      const thumbH = Math.max(1, Math.min(contentEnd, Math.round((contentEnd * contentEnd) / total)));
+      const thumbTop = Math.round((1 - this.scrollOffset / maxOffset) * (contentEnd - thumbH));
+      for (let r = thumbTop; r < thumbTop + thumbH; r++) {
+        if (r >= 0 && r < contentEnd) grid.set(r, this.cols - 1, '▐', 0, 90);  // 暗灰右半块
+      }
+    }
+
     return grid;
   }
 
