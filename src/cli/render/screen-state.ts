@@ -1,32 +1,36 @@
 /**
- * ScreenState — 单一屏幕模型（最小屏幕状态追踪）。
+ * ScreenState — 单一屏幕模型（方向 B：二维网格渲染）。
  *
- * 只追踪几何，不追踪输出历史：
- *   - inputRows：输入块占用的行数（0 = 无输入块在屏）。取代旧 cli.ts 的 renderedLines。
- *   - statusActive：光标是否停在活状态行（末字节 \x1b[K、无 \n 收尾）。
+ * 内部驱动 ScreenBuffer（完整内容模型：scrollback + 状态行 + 输入块），
+ * 每次变更后 flush() 走 cell-diff 只写变化部分 —— 不再有裸 \r / \x1b[J / 高频 \n 滚动。
  *
- * 三个不变量：
- *   I1 输入块永远在屏幕最后 N 行 —— 定位只相对屏幕底部（\x1b[{inputRows-1}A），与输出历史无关。
- *   I2 活状态行不悬挂 —— 写多行输出 / prompt 前先 \n 收尾，杜绝「\r ● Thinking… 插进结果和 prompt 之间」。
- *   I3 单写路径 —— CLI 层所有 process.stdout.write 都经 emit()。
+ * 保留几何委托（input-geometry 的 contentLines/cursorPos/foldInput）与旧调用方
+ * （renderer / input-buffer）的 API，只换「输出到终端」这一层。
+ *
+ * 不变量：
+ *   I1 输入块永远贴底（ScreenBuffer.compose 里 bottom-aligned，与输出历史无关）。
+ *   I2 活状态行不悬挂 —— 写输出 / prompt 前先 commitStatus 收尾。
+ *   I3 单写路径 —— 所有 stdout 写经 emit()（grid flush 的 out 回调 + 终端模式原语共用）。
  */
-import { displayWidth, wrapLine } from './term-wrap.js';
+import { ScreenBuffer } from './screen-buffer.js';
+import { displayWidth } from './term-wrap.js';
 import { contentLines as geomContentLines, cursorPos as geomCursorPos, foldInput as geomFoldInput } from '../input/input-geometry.js';
 
 export class ScreenState {
   private prompt: string;
   private promptWidth: number;
-  private _inputRows = 0;
-  private _statusActive = false;
-  private _statusLine = '';   // 当前状态行内容，供下次 overwriteStatus 做前缀 diff
+  private sb: ScreenBuffer;
 
-  constructor(prompt: string) {
+  constructor(prompt: string, opts?: { rows?: number; cols?: number }) {
     this.prompt = prompt;
     this.promptWidth = displayWidth(prompt);
+    const rows = opts?.rows ?? process.stdout.rows ?? 24;
+    const cols = opts?.cols ?? process.stdout.columns ?? 80;
+    this.sb = new ScreenBuffer(rows, cols, (s) => this.emit(s));
+    this.sb.setPrompt(prompt);
   }
 
-  get cols(): number { return process.stdout.columns || 80; }
-  get inputRows(): number { return this._inputRows; }
+  get cols(): number { return this.sb.cols; }
 
   // ---- 几何（委托 input-geometry，逐字节等价） ----
 
@@ -34,124 +38,73 @@ export class ScreenState {
   cursorPos(chars: string[], cursor: number): { line: number; col: number } { return geomCursorPos(chars, cursor, this.cols, this.promptWidth); }
   foldInput(chars: string[], startCol: number = this.promptWidth): string { return geomFoldInput(chars, this.cols, startCol); }
 
-  // ---- 写路径 ----
+  // ---- 唯一 stdout 写咽喉（I3） ----
 
-  /** 唯一 process.stdout.write 咽喉（I3）。 */
   emit(raw: string): void { process.stdout.write(raw); }
 
-  /** 标记活状态行状态。渲染层维护；输入层据此避免 prompt 粘连。 */
-  markStatus(active: boolean): void { this._setStatusActive(active); }
+  // ---- 终端模式原语（不参与 grid，直接写 stdout） ----
 
-  private _setStatusActive(active: boolean): void {
-    this._statusActive = active;
-    if (!active) this._statusLine = '';  // 状态行收尾后，其内容作废
-  }
+  enterAltScreen(): void { this.emit('\x1b[?1049h'); }
+  leaveAltScreen(): void { this.emit('\x1b[?1049l'); }
 
-  // ---- 输入块原语 ----
+  // ---- 输入块原语（写 grid） ----
 
   printPrompt(): void {
-    // I2：若有活状态行悬挂，先收尾，避免 prompt 粘到 thinking 行
-    if (this._statusActive) this.emit('\n');
-    this.emit(this.prompt);
-    this._inputRows = 1;
-    this._setStatusActive(false);
-  }
-
-  /** 重绘输入块（逐字节复刻旧 redraw()，含两个 >0 守卫） */
-  rewriteInput(folded: string, newRows: number, line: number, col: number): void {
-    let out = '';
-    if (this._inputRows > 1) out += `\x1b[${this._inputRows - 1}A`;
-    out += `\r\x1b[J${this.prompt}${folded}`;
-    const upToCursor = newRows - 1 - line;
-    if (upToCursor > 0) out += `\x1b[${upToCursor}A`;
-    out += '\r';
-    if (col > 0) out += `\x1b[${col}C`;
-    this._inputRows = newRows;
-    this._setStatusActive(false);
-    this.emit(out);
-  }
-
-  /** O(1) 追加 echo（光标在末尾时） */
-  appendInput(foldedChunk: string, newRows: number): void {
-    this.emit(foldedChunk);
-    this._inputRows = newRows;
-  }
-
-  /** 提交：写 \n 收尾输入块，inputRows 归 0 */
-  submitInput(): void {
-    this.emit('\n');
-    this._inputRows = 0;
-    this._setStatusActive(false);
-  }
-
-  // ---- 输出原语 ----
-
-  /** 写一条新状态行（thinking_start）。可前置换行。记录内容供后续 diff。 */
-  beginStatus(content: string, leadingNewline: boolean): void {
-    this._statusLine = content;
-    this._setStatusActive(true);
-    this.emit(`${leadingNewline ? '\n' : ''}${content}\x1b[K`);
-  }
-
-  /** 覆写活状态行：与上次内容做前缀 diff，只写变化部分（对标 Ink cell-diff，降写频）。 */
-  overwriteStatus(content: string): void {
-    const prev = this._statusLine;
-    this._statusLine = content;
-    this._setStatusActive(true);
-
-    // 首次写 → 整行写
-    if (prev === '') { this.emit(`\r${content}\x1b[K`); return; }
-
-    // 公共前缀（原始字符；ANSI 码位置稳定）
-    let p = 0;
-    const min = Math.min(prev.length, content.length);
-    while (p < min && prev[p] === content[p]) p++;
-    const prefix = prev.slice(0, p);
-
-    // diff 点落在粗体段内（前缀含未闭合粗体）→ 回退整行写，避免 SGR 错乱
-    if (this._endsInBold(prefix)) { this.emit(`\r${content}\x1b[K`); return; }
-
-    // 新行是旧行延长 → 光标已在末尾，直接写后缀
-    if (p === prev.length) { this.emit(content.slice(p)); return; }
-
-    // 通用 diff：回到前缀列 + 写新后缀 +（变短时）清残留
-    const prefixW = displayWidth(prefix);
-    const prevW = displayWidth(prev);
-    const newW = displayWidth(content);
-    let out = `\r\x1b[${prefixW}C${content.slice(p)}`;
-    if (newW < prevW) out += '\x1b[K';
-    this.emit(out);
-  }
-
-  /** 前缀的粗体是否未闭合（即 diff 点落在 \x1b[1m… 内） */
-  private _endsInBold(prefix: string): boolean {
-    let bold = false;
-    for (let i = 0; i < prefix.length; i++) {
-      if (prefix[i] === '\x1b' && prefix[i + 1] === '[') {
-        const m = /^\x1b\[([0-9;]*)m/.exec(prefix.slice(i));
-        if (m) {
-          const codes = m[1].split(';');
-          if (codes.includes('1')) bold = true;
-          else if (codes.includes('22') || codes.includes('0')) bold = false;
-          i += m[0].length - 1;
-        }
-      }
-    }
-    return bold;
-  }
-
-  /** 写多行文本：逐行 wrapLine 折行，保证无超长行（治本：超长行会触发 Terminal SwiftUI 布局递归崩溃） */
-  writeLines(text: string): void {
     // I2：若有活状态行悬挂，先收尾
-    if (this._statusActive) this.emit('\n');
-    // 批量写：攒成一个字符串，一次 emit，减少终端重绘次数（nano 崩溃的写频机制）
-    let out = '';
-    for (const line of text.split('\n')) {
-      for (const row of wrapLine(line, this.cols)) {
-        out += row + '\n';
-      }
-    }
-    this.emit(out);
-    this._setStatusActive(false);
+    if (this.sb.hasStatus) this.sb.commitStatus();
+    this.sb.setInput('', { line: 0, col: this.promptWidth });
+    this.sb.flush();
   }
+
+  /** 重绘输入块（含光标）。grid diff 已只写变化 cell，无需再分 append/redraw 两路。 */
+  rewriteInput(folded: string, newRows: number, line: number, col: number): void {
+    this.sb.setInput(folded, { line, col });
+    this.sb.flush();
+  }
+
+  /** 提交：隐藏输入块。 */
+  submitInput(): void {
+    this.sb.clearInput();
+    this.sb.flush();
+  }
+
+  // ---- 输出原语（写 grid） ----
+
+  /** 写一条新状态行（thinking_start）。leadingNewline 时先垫一空行（后续 thinking 分隔）。 */
+  beginStatus(content: string, leadingNewline: boolean): void {
+    if (this.sb.hasStatus) this.sb.discardStatus();  // 防御：不应发生
+    if (leadingNewline) this.sb.writeOutput('');     // 空行分隔
+    this.sb.setStatus(content);
+    this.sb.flush();
+  }
+
+  /** 覆写活状态行（thinking_tick / 工具心跳）。grid diff 自动只写变化的秒数 cell。 */
+  overwriteStatus(content: string): void {
+    this.sb.setStatus(content);
+    this.sb.flush();
+  }
+
+  /** 状态行定稿为永久输出行（thinking_end）。finalContent 覆盖中间态。 */
+  endStatus(finalContent: string): void {
+    this.sb.commitStatus(finalContent);
+    this.sb.flush();
+  }
+
+  /** 写多行输出：先收尾活状态行，再追加输出行（每条按 cols 折行）。 */
+  writeLines(text: string): void {
+    if (this.sb.hasStatus) this.sb.commitStatus();  // I2
+    this.sb.writeOutput(text);
+    this.sb.flush();
+  }
+
+  /** 工具展示：首行替换活状态行（"● Bash (0.0s)" → 工具详情）。 */
+  displayTools(lines: string[]): void {
+    if (this.sb.hasStatus) this.sb.discardStatus();  // 首行替换状态行
+    this.sb.writeOutput(lines.join('\n'));
+    this.sb.flush();
+  }
+
+  // ---- 调试/测试 ----
+
+  snapshot(): string[] { return this.sb.snapshot(); }
 }

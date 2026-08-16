@@ -36,10 +36,9 @@ export function createInputBuffer(ss: ScreenState) {
 
   process.stdin.on('data', (chunk: string) => {
     if (closed) return;
-    const oldCursor = model.cursor;
     const effect = applyChunk(model, chunk);
 
-    if (effect.exit) { ss.emit('\nBye.\n'); process.exit(0); return; }
+    if (effect.exit) { ss.leaveAltScreen(); ss.emit('\nBye.\n'); process.exit(0); return; }
 
     if (effect.submit != null) {
       model.chars = [];
@@ -53,14 +52,10 @@ export function createInputBuffer(ss: ScreenState) {
       return;
     }
 
-    if (effect.edit === 'append') {
-      // 追加 O(1) 折行 echo：oldCursor 处只读到旧字符（push 仅追加在后），
-      // 一次写入、不触发 \x1b[J（高频 \x1b[J 会腐败 nano malloc，输入法一打字就 SIGTRAP），
-      // 也不软折行（软折行超长会触发 Terminal 渲染 bug 导致缺字）。两者兼顾。
-      const { col: startCol } = ss.cursorPos(model.chars, oldCursor);
-      const newChars = model.chars.slice(oldCursor);
-      ss.appendInput(ss.foldInput(newChars, startCol), ss.contentLines(model.chars));
-    } else if (effect.edit === 'redraw') {
+    if (effect.edit === 'append' || effect.edit === 'redraw') {
+      // 统一全量重绘：grid diff 已只写变化 cell（追加时只写新字符、编辑时只写改动区），
+      // 不再触发 \x1b[J 全屏清（高频 \x1b[J 会腐败 nano malloc，输入法一打字就 SIGTRAP），
+      // 也不软折行（软折行超长会触发 Terminal 渲染 bug 导致缺字）。append/redraw 两路合一。
       redraw();
     }
   });
@@ -85,7 +80,8 @@ export function createInputBuffer(ss: ScreenState) {
 
     close(): void {
       closed = true;
-      // 关闭 bracketed paste + 恢复 raw mode，避免退出后终端状态残留
+      // 恢复主屏 + 关闭 bracketed paste + 恢复 raw mode，避免退出后终端状态残留
+      ss.leaveAltScreen();
       ss.emit('\x1b[?2004l');
       if (typeof process.stdin.setRawMode === 'function') {
         try { process.stdin.setRawMode(false); } catch { /* 忽略 */ }

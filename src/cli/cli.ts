@@ -13,6 +13,9 @@ import { createInputBuffer } from './input/input-buffer.js';
 export function createCLI() {
   const PROMPT = `${C}${B}mythinknode${b}${c} ${B}>>>${b} `;
   const ss = new ScreenState(PROMPT);
+  // 进入备用屏：grid 光标重绘 = 固定屏幕语义，且避开 Terminal.app 原生滚动（崩溃源）。
+  // close() / Ctrl+C 里 leaveAltScreen() 恢复主屏。
+  ss.enterAltScreen();
   const input = createInputBuffer(ss);
   const renderer = createRenderer(ss);
 
@@ -23,6 +26,8 @@ export function createCLI() {
     renderError: renderer.renderError,
     startRender: renderer.startRender,
     showHelp: renderer.showHelp,
+    // 备用屏启动后，banner 也要进 grid（否则 console.log 写主屏会被隐藏）
+    writeLines: (text: string) => ss.writeLines(text),
     close: input.close,
   };
 }

@@ -57,9 +57,7 @@ function renderProgress(event: ProgressEvent, ss: ScreenState): void {
         const raw = event.elapsedMs / 1000;
         const s = raw < 0.1 ? '<0.1' : raw.toFixed(1);
         const hint = event.toolCount > 0 ? ` → ${event.toolCount} tool${event.toolCount > 1 ? 's' : ''}` : '';
-        const pfx = wide ? '\r' : '\n';
-        ss.emit(`${pfx}  ● ${B}Thinking${b} (${s}s) — ${trunc(event.label, cols - 25)}${hint}\x1b[K\n`);
-        ss.markStatus(false);
+        ss.endStatus(`  ● ${B}Thinking${b} (${s}s) — ${trunc(event.label, cols - 25)}${hint}`);
         break;
       }
       case 'thought': {
@@ -68,19 +66,13 @@ function renderProgress(event: ProgressEvent, ss: ScreenState): void {
         break;
       }
       case 'tool_display': {
-        // 首行 \r 覆盖 tick 的状态行（"● Bash (0.0s)"），其余行正常换行；每行折行避免超长（工具 sample 可能多行）
-        // 批量写：攒成一个字符串，一次 emit，减少终端重绘次数
+        // 首行替换 tick 的状态行（"● Bash (0.0s)"），其余行正常追加；每行折行避免超长（工具 sample 可能多行）
         const text = renderMergedTools(event.calls, event.elapsedMs, cols);
-        let out = '';
-        let first = true;
+        const lines: string[] = [];
         for (const line of text.split('\n')) {
-          for (const row of wrapLine(line, cols)) {
-            out += `${first ? '\r' : ''}${row}\x1b[K\n`;
-            first = false;
-          }
+          for (const row of wrapLine(line, cols)) lines.push(row);
         }
-        ss.emit(out);
-        ss.markStatus(false);
+        ss.displayTools(lines);
         break;
       }
       case 'error':
