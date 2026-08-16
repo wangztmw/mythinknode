@@ -66,5 +66,35 @@ console.log('\n=== ScreenBuffer 回归 ===\n');
   assert('ANSI bold 输出：文本正确', snap[0] === 'Head body');
 }
 
+// 7. 自实现 scrollback：输入块激活时回滚，指示行出现在输入块上方
+{
+  const sb = new ScreenBuffer(6, 20);
+  sb.setPrompt('P> ');
+  sb.setInput('', { line: 0, col: 3 });   // 输入块激活（prompt 贴底）
+  sb.writeOutput('1\n2\n3\n4\n5\n6\n7\n8');  // 8 行输出
+  let snap = sb.snapshot();
+  assert('滚动前：输出贴输入块上方', snap[0] === '4' && snap[4] === '8' && snap[5] === 'P>');
+
+  sb.scrollBy(3);   // 回滚 3 行
+  snap = sb.snapshot();
+  assert('回滚后：输出上移', snap[0] === '2' && snap[3] === '5');
+  assert('回滚后：指示行在输入块上方', snap[4].includes('已回滚') && snap[5] === 'P>');
+
+  sb.scrollToBottom();
+  snap = sb.snapshot();
+  assert('回到底：指示行消失', snap[0] === '4' && !snap.some((r) => r.includes('已回滚')) && snap[5] === 'P>');
+}
+
+// 8. 回滚到最顶：maxOffset 受输入块+指示行约束
+{
+  const sb = new ScreenBuffer(6, 20);
+  sb.setPrompt('P> ');
+  sb.setInput('', { line: 0, col: 3 });
+  sb.writeOutput('1\n2\n3\n4\n5\n6\n7\n8');
+  sb.scrollBy(100);  // 超过最大回滚
+  const snap = sb.snapshot();
+  assert('回滚到最顶：显示第 1 行', snap[0] === '1');
+}
+
 console.log(`\n=== 结果: ${PASS} 通过, ${FAIL} 失败 ===\n`);
 process.exit(FAIL > 0 ? 1 : 0);

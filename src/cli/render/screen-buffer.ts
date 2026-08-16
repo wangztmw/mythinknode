@@ -4,6 +4,7 @@
  * 持有 scrollback（输出历史）+ 活状态行 + 输入块，compose 出整屏 CellGrid，
  * flush 时 diff 只写变化 cell（光标定位重绘 = 备用屏语义，不靠终端原生滚动）。
  *
+ * 自实现 scrollback：scrollOffset 追踪回滚行数，回滚态在输入块上方画一行指示。
  * 关键：每次变更都 _render() 重 compose 进 viewport；flush() 才 diff + emit。
  * 纯逻辑，零 I/O（out 回调注入）。
  */
@@ -45,21 +46,27 @@ export class ScreenBuffer {
     }
     if (this.scrollOffset > 0) {
       // 回滚中：新输出把「底部」往下推，偏移同步增加，视口不跳
-      const maxOffset = Math.max(0, this.scrollback.length - this.rows);
-      this.scrollOffset = Math.min(maxOffset, this.scrollOffset + added);
+      this.scrollOffset = Math.min(this._maxScrollOffset(), this.scrollOffset + added);
     }
     this._render();
   }
 
-  /** 回滚：n>0 向上，n<0 向下。 */
+  /** 回滚：n>0 向上（看更早），n<0 向下（回更近）。 */
   scrollBy(n: number): void {
-    const maxOffset = Math.max(0, this.scrollback.length - this.rows);
-    this.scrollOffset = Math.max(0, Math.min(maxOffset, this.scrollOffset + n));
+    this.scrollOffset = Math.max(0, Math.min(this._maxScrollOffset(), this.scrollOffset + n));
     this._render();
   }
 
-  /** 是否停在底部（新输出会跟随滚动）。 */
+  /** 回到底部（新输出跟随滚动）。 */
+  scrollToBottom(): void {
+    if (this.scrollOffset !== 0) { this.scrollOffset = 0; this._render(); }
+  }
+
+  /** 是否停在底部。 */
   get atBottom(): boolean { return this.scrollOffset === 0; }
+
+  /** 是否回滚中。 */
+  get scrolledBack(): boolean { return this.scrollOffset > 0; }
 
   // ---- 状态行 ----
 
@@ -94,24 +101,36 @@ export class ScreenBuffer {
   /** 隐藏输入块（提交后）。 */
   clearInput(): void { this.inputText = ''; this.inputActive = false; this._render(); }
 
-  // ---- compose + flush ----
+  // ---- 布局 + compose + flush ----
 
   private inputRows(): number {
     if (!this.inputActive) return 0;
     return Math.max(1, this.inputText.split('\n').length);
   }
 
-  /** 把输出 + 状态 + 输入 compose 成整屏网格（自实现 scrollback，顶部对齐）。 */
+  /** 最大可回滚行数（回滚态指示行开启时，输出区 = rows - inputVisible - 1）。 */
+  private _maxScrollOffset(): number {
+    if (!this.inputActive) return Math.max(0, this.scrollback.length - this.rows);
+    const inputVisible = Math.min(this.inputRows(), this.rows - 1);
+    const contentEnd = Math.max(0, this.rows - inputVisible - 1);
+    return Math.max(0, this.scrollback.length - contentEnd);
+  }
+
+  /** 把输出 + 状态 + 输入（+ 回滚指示）compose 成整屏网格（顶部对齐）。 */
   private compose(): CellGrid {
     const grid = new CellGrid(this.rows, this.cols);
 
+    const indicatorRows = (this.inputActive && this.scrollOffset > 0) ? 1 : 0;
+
     // 1. 输入块：贴底，最多占满全屏（超长输入只显示含光标的底部窗口）
+    let inputBase = this.rows;
     if (this.inputActive) {
       const lines = this.inputText.split('\n');
       const inRows = Math.max(1, lines.length);
-      const visible = Math.min(inRows, this.rows);
-      const startLine = inRows - visible;      // 显示最后 visible 行（光标通常在末尾）
+      const visible = Math.min(inRows, this.rows - indicatorRows);
+      const startLine = inRows - visible;
       const base = this.rows - visible;
+      inputBase = base;
       for (let k = 0; k < visible; k++) {
         const srcLine = startLine + k;
         const text = srcLine === 0 ? this.prompt + (lines[srcLine] ?? '') : (lines[srcLine] ?? '');
@@ -120,8 +139,14 @@ export class ScreenBuffer {
       this.cursorScreen = { row: base + (this.cursor.line - startLine), col: this.cursor.col };
     }
 
-    // 2. 输出 + 状态行：占据输入块以上的 [0, rows - visibleIn) 行，顶部对齐
-    const contentEnd = this.rows - (this.inputActive ? Math.min(this.inputRows(), this.rows) : 0);
+    // 2. 回滚指示行：输入块上方
+    if (indicatorRows) {
+      const indRow = inputBase - 1;
+      if (indRow >= 0) writeAnsiText(grid, indRow, 0, `↑ 已回滚 ${this.scrollOffset} 行 · PgDn 回底`);
+    }
+
+    // 3. 输出 + 状态行：占据 [0, contentEnd) 行，顶部对齐
+    const contentEnd = inputBase - indicatorRows;
     if (contentEnd > 0) {
       const content = this.hasStatus ? [...this.scrollback, this.status!] : this.scrollback;
       const visible = Math.min(contentEnd, content.length);

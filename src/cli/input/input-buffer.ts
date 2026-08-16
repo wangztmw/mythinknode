@@ -36,6 +36,14 @@ export function createInputBuffer(ss: ScreenState) {
 
   process.stdin.on('data', (chunk: string) => {
     if (closed) return;
+
+    // 自实现 scrollback（B6）：PgUp/PgDn 滚动输出，不进输入模型
+    const page = Math.max(1, ss.rows - 1);
+    if (chunk === '\x1b[5~') { ss.scrollBy(page); return; }   // PgUp 向上
+    if (chunk === '\x1b[6~') { ss.scrollBy(-page); return; }  // PgDn 向下
+    // 非滚动输入：若在回滚态，先回到底（打字/编辑/提交都先回到最新输出）
+    if (ss.scrolledBack) ss.scrollToBottom();
+
     const effect = applyChunk(model, chunk);
 
     if (effect.exit) { ss.leaveAltScreen(); ss.emit('\nBye.\n'); process.exit(0); return; }

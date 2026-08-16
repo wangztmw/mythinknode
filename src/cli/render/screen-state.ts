@@ -31,6 +31,16 @@ export class ScreenState {
   }
 
   get cols(): number { return this.sb.cols; }
+  get rows(): number { return this.sb.rows; }
+  get scrolledBack(): boolean { return this.sb.scrolledBack; }
+
+  // ---- 自实现 scrollback（B6） ----
+
+  /** 回滚 n 行（n>0 向上看更早，n<0 向下）。 */
+  scrollBy(n: number): void { this.sb.scrollBy(n); this.sb.flush(); }
+
+  /** 回到底部（新输出跟随滚动）。 */
+  scrollToBottom(): void { this.sb.scrollToBottom(); this.sb.flush(); }
 
   // ---- 几何（委托 input-geometry，逐字节等价） ----
 
