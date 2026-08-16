@@ -96,5 +96,26 @@ console.log('\n=== ScreenBuffer 回归 ===\n');
   assert('回滚到最顶：显示第 1 行', snap[0] === '1');
 }
 
+// 9. commitInput：提交后输入行进 scrollback（原生屏语义），输入块隐藏
+{
+  const sb = new ScreenBuffer(6, 20);
+  sb.setPrompt('P> ');
+  sb.setInput('hi', { line: 0, col: 5 });
+  sb.commitInput();
+  const snap = sb.snapshot();
+  assert('commitInput：输入行进历史', snap[0] === 'P> hi');
+  assert('commitInput：输入块隐藏', snap[5] === '');
+}
+
+// 10. resize：尺寸变化后网格更新 + 内容重绘
+{
+  const sb = new ScreenBuffer(6, 20);
+  sb.writeOutput('a\nb');
+  sb.resize(4, 10);
+  const snap = sb.snapshot();
+  assert('resize：rows/cols 更新', sb.rows === 4 && sb.cols === 10);
+  assert('resize：内容在新尺寸网格重绘', snap[0] === 'a' && snap[1] === 'b' && snap.length === 4);
+}
+
 console.log(`\n=== 结果: ${PASS} 通过, ${FAIL} 失败 ===\n`);
 process.exit(FAIL > 0 ? 1 : 0);

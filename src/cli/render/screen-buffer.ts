@@ -14,8 +14,8 @@ import { patchesToANSI } from './emitter.js';
 import { wrapLine } from './term-wrap.js';
 
 export class ScreenBuffer {
-  readonly rows: number;
-  readonly cols: number;
+  rows: number;
+  cols: number;
   private scrollback: string[] = [];   // 输出历史（每项 = 一个已折行可视行）
   private scrollOffset = 0;            // 0 = 底部；N = 回滚 N 行
   private status: string | null = null;// 活状态行内容（ANSI），null = 无
@@ -100,6 +100,29 @@ export class ScreenBuffer {
 
   /** 隐藏输入块（提交后）。 */
   clearInput(): void { this.inputText = ''; this.inputActive = false; this._render(); }
+
+  /** 提交输入块进 scrollback（原生屏语义：按回车后输入行留在历史里），然后隐藏输入块。 */
+  commitInput(): void {
+    if (!this.inputActive) return;
+    const lines = this.inputText.split('\n');
+    const inRows = Math.max(1, lines.length);
+    for (let k = 0; k < inRows; k++) {
+      this.scrollback.push(k === 0 ? this.prompt + (lines[k] ?? '') : (lines[k] ?? ''));
+    }
+    this.inputText = '';
+    this.inputActive = false;
+    this._render();
+  }
+
+  /** 终端尺寸变化：更新网格尺寸，清空上一帧触发全量重绘。 */
+  resize(rows: number, cols: number): void {
+    if (rows === this.rows && cols === this.cols) return;
+    this.rows = rows;
+    this.cols = cols;
+    this.scrollOffset = Math.min(this.scrollOffset, this._maxScrollOffset());
+    this.prevViewport = new CellGrid(rows, cols);  // 清空 → 下次 flush 全量重绘
+    this._render();
+  }
 
   // ---- 布局 + compose + flush ----
 

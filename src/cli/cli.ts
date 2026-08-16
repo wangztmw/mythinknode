@@ -16,6 +16,8 @@ export function createCLI() {
   // 进入备用屏：grid 光标重绘 = 固定屏幕语义，且避开 Terminal.app 原生滚动（崩溃源）。
   // close() / Ctrl+C 里 leaveAltScreen() 恢复主屏。
   ss.enterAltScreen();
+  // 终端尺寸变化：网格跟随重绘（否则旧尺寸的网格会错位/留空白）
+  process.stdout.on('resize', () => ss.onResize());
   const input = createInputBuffer(ss);
   const renderer = createRenderer(ss);
 

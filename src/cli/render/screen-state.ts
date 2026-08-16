@@ -54,8 +54,19 @@ export class ScreenState {
 
   // ---- 终端模式原语（不参与 grid，直接写 stdout） ----
 
-  enterAltScreen(): void { this.emit('\x1b[?1049h'); }
-  leaveAltScreen(): void { this.emit('\x1b[?1049l'); }
+  // 备用屏 + 鼠标滚轮上报（SGR 扩展模式），让触控板/滚轮能驱动自实现 scrollback
+  enterAltScreen(): void { this.emit('\x1b[?1049h\x1b[?1000h\x1b[?1006h'); }
+  leaveAltScreen(): void { this.emit('\x1b[?1006l\x1b[?1000l\x1b[?1049l'); }
+
+  /** 终端尺寸变化：清屏 + 更新网格 + 全量重绘。 */
+  onResize(): void {
+    const rows = process.stdout.rows ?? this.rows;
+    const cols = process.stdout.columns ?? this.cols;
+    if (rows === this.rows && cols === this.cols) return;
+    this.emit('\x1b[2J\x1b[H');  // 清物理屏，避免旧尺寸残留
+    this.sb.resize(rows, cols);
+    this.sb.flush();
+  }
 
   // ---- 输入块原语（写 grid） ----
 
@@ -72,9 +83,9 @@ export class ScreenState {
     this.sb.flush();
   }
 
-  /** 提交：隐藏输入块。 */
+  /** 提交：输入行进 scrollback（留在历史里），再隐藏输入块。 */
   submitInput(): void {
-    this.sb.clearInput();
+    this.sb.commitInput();
     this.sb.flush();
   }
 
