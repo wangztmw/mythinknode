@@ -83,9 +83,9 @@ export class ScreenState {
     this.sb.flush();
   }
 
-  /** 提交：输入行进 scrollback（留在历史里），再隐藏输入块。 */
-  submitInput(): void {
-    this.sb.commitInput();
+  /** 提交：输入行进 scrollback（留在历史里，存原始文本便于 resize 重折行），再隐藏输入块。 */
+  submitInput(rawText: string): void {
+    this.sb.commitInput(rawText);
     this.sb.flush();
   }
 

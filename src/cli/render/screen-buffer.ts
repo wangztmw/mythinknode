@@ -1,11 +1,12 @@
 /**
  * ScreenBuffer — 完整屏幕模型（方向 B）。
  *
- * 持有 scrollback（输出历史）+ 活状态行 + 输入块，compose 出整屏 CellGrid，
- * flush 时 diff 只写变化 cell（光标定位重绘 = 备用屏语义，不靠终端原生滚动）。
+ * 持有 scrollback（输出历史，存「原始逻辑行」）+ 折行缓存 + 活状态行 + 输入块，
+ * compose 出整屏 CellGrid，flush 时 diff 只写变化 cell（光标定位重绘 = 备用屏语义）。
  *
+ * 关键：scrollback 存原始行（未折行），折行结果缓存进 wrappedLines，resize 时重建缓存——
+ * 这样终端尺寸变化后旧内容按新宽度重新折行，不再被截断/错位。
  * 自实现 scrollback：scrollOffset 追踪回滚行数，回滚态在输入块上方画一行指示。
- * 关键：每次变更都 _render() 重 compose 进 viewport；flush() 才 diff + emit。
  * 纯逻辑，零 I/O（out 回调注入）。
  */
 import { CellGrid, writeAnsiText } from './cell-grid.js';
@@ -16,17 +17,18 @@ import { wrapLine } from './term-wrap.js';
 export class ScreenBuffer {
   rows: number;
   cols: number;
-  private scrollback: string[] = [];   // 输出历史（每项 = 一个已折行可视行）
-  private scrollOffset = 0;            // 0 = 底部；N = 回滚 N 行
-  private status: string | null = null;// 活状态行内容（ANSI），null = 无
-  private prompt = '';                 // 输入提示符（ANSI）
-  private inputText = '';              // 已折行输入内容（可含 \n）
-  private inputActive = false;         // 输入块是否显示
-  private cursor = { line: 0, col: 0 };// 输入光标（相对输入块，line 0 = prompt 行）
+  private rawLines: string[] = [];      // 输出历史（每项 = 一个原始逻辑行，含 ANSI、未折行）
+  private wrappedLines: string[] = [];  // 折行缓存（每项 ≤ cols；resize 时重建）
+  private scrollOffset = 0;             // 0 = 底部；N = 回滚 N 行
+  private status: string | null = null; // 活状态行内容（ANSI），null = 无
+  private prompt = '';                  // 输入提示符（ANSI）
+  private inputText = '';               // 已折行输入内容（可含 \n，仅用于显示）
+  private inputActive = false;          // 输入块是否显示
+  private cursor = { line: 0, col: 0 }; // 输入光标（相对输入块，line 0 = prompt 行）
   private cursorScreen = { row: 0, col: 0 };  // 光标在整屏的坐标（compose 时算）
   private out: (s: string) => void;
-  private viewport: CellGrid;          // 当前帧
-  private prevViewport: CellGrid;      // 上一帧（已 flush）
+  private viewport: CellGrid;           // 当前帧
+  private prevViewport: CellGrid;       // 上一帧（已 flush）
 
   constructor(rows: number, cols: number, out: (s: string) => void = (s) => process.stdout.write(s)) {
     this.rows = rows;
@@ -38,12 +40,17 @@ export class ScreenBuffer {
 
   // ---- 输出（scrollback）----
 
-  /** 追加输出：按 cols 折行进 scrollback。回滚状态下同步偏移，保持视口钉在原内容。 */
+  /** 追加一个原始逻辑行（进 rawLines，同时折行进 wrappedLines 缓存）。 */
+  private _pushRawLine(line: string): void {
+    this.rawLines.push(line);
+    for (const row of wrapLine(line, this.cols)) this.wrappedLines.push(row);
+  }
+
+  /** 追加输出：按 \n 拆成原始行进 scrollback。回滚状态下同步偏移，保持视口钉在原内容。 */
   writeOutput(text: string): void {
-    let added = 0;
-    for (const line of text.split('\n')) {
-      for (const row of wrapLine(line, this.cols)) { this.scrollback.push(row); added++; }
-    }
+    const before = this.wrappedLines.length;
+    for (const line of text.split('\n')) this._pushRawLine(line);
+    const added = this.wrappedLines.length - before;
     if (this.scrollOffset > 0) {
       // 回滚中：新输出把「底部」往下推，偏移同步增加，视口不跳
       this.scrollOffset = Math.min(this._maxScrollOffset(), this.scrollOffset + added);
@@ -78,7 +85,7 @@ export class ScreenBuffer {
   /** 提交状态行为永久输出行；finalContent 覆盖最终内容（thinking_end 用）。 */
   commitStatus(finalContent?: string): void {
     if (this.status == null && finalContent == null) return;
-    this.scrollback.push(finalContent ?? this.status!);
+    this._pushRawLine(finalContent ?? this.status!);
     this.status = null;
     this._render();
   }
@@ -101,27 +108,35 @@ export class ScreenBuffer {
   /** 隐藏输入块（提交后）。 */
   clearInput(): void { this.inputText = ''; this.inputActive = false; this._render(); }
 
-  /** 提交输入块进 scrollback（原生屏语义：按回车后输入行留在历史里），然后隐藏输入块。 */
-  commitInput(): void {
+  /** 提交输入块进 scrollback（原生屏语义：按回车后输入行留在历史里），然后隐藏输入块。
+   *  rawText = 用户原始输入（未折行、未清洗），存原始行以便 resize 时重新折行。 */
+  commitInput(rawText: string): void {
     if (!this.inputActive) return;
-    const lines = this.inputText.split('\n');
-    const inRows = Math.max(1, lines.length);
-    for (let k = 0; k < inRows; k++) {
-      this.scrollback.push(k === 0 ? this.prompt + (lines[k] ?? '') : (lines[k] ?? ''));
+    const lines = rawText.split('\n');
+    for (let k = 0; k < lines.length; k++) {
+      this._pushRawLine(k === 0 ? this.prompt + lines[k] : lines[k]);
     }
     this.inputText = '';
     this.inputActive = false;
     this._render();
   }
 
-  /** 终端尺寸变化：更新网格尺寸，清空上一帧触发全量重绘。 */
+  /** 终端尺寸变化：更新网格尺寸，重建折行缓存（按新 cols 重折），触发全量重绘。 */
   resize(rows: number, cols: number): void {
     if (rows === this.rows && cols === this.cols) return;
     this.rows = rows;
     this.cols = cols;
+    this._rebuildWrapped();
     this.scrollOffset = Math.min(this.scrollOffset, this._maxScrollOffset());
     this.prevViewport = new CellGrid(rows, cols);  // 清空 → 下次 flush 全量重绘
     this._render();
+  }
+
+  private _rebuildWrapped(): void {
+    this.wrappedLines = [];
+    for (const line of this.rawLines) {
+      for (const row of wrapLine(line, this.cols)) this.wrappedLines.push(row);
+    }
   }
 
   // ---- 布局 + compose + flush ----
@@ -131,9 +146,9 @@ export class ScreenBuffer {
     return Math.max(1, this.inputText.split('\n').length);
   }
 
-  /** 最大可回滚行数 = 内容总行数 - 内容区「未滚动」高度（rows - inputVisible）。 */
+  /** 最大可回滚行数 = 折行后内容总行数 - 内容区「未滚动」高度（rows - inputVisible）。 */
   private _maxScrollOffset(): number {
-    const content = this.scrollback.length + (this.hasStatus ? 1 : 0);
+    const content = this.wrappedLines.length + (this.hasStatus ? 1 : 0);
     const inputVisible = this.inputActive ? Math.min(this.inputRows(), this.rows) : 0;
     return Math.max(0, content - (this.rows - inputVisible));
   }
@@ -144,7 +159,7 @@ export class ScreenBuffer {
     const grid = new CellGrid(this.rows, this.cols);
 
     const indicatorRows = (this.inputActive && this.scrollOffset > 0) ? 1 : 0;
-    const content = this.hasStatus ? [...this.scrollback, this.status!] : this.scrollback;
+    const totalContent = this.wrappedLines.length + (this.hasStatus ? 1 : 0);
 
     // 输入块可见行数 + 内容区「未滚动」高度（输入块上方的行数）
     const inputVisible = this.inputActive ? Math.min(this.inputRows(), Math.max(0, this.rows - indicatorRows)) : 0;
@@ -158,7 +173,7 @@ export class ScreenBuffer {
       const startLine = inRows - inputVisible;
       inputTop = this.scrollOffset > 0
         ? this.rows - inputVisible                          // 回滚中：贴底
-        : Math.min(content.length, contentBottomWindow);    // 内容后紧跟，溢出才贴底
+        : Math.min(totalContent, contentBottomWindow);      // 内容后紧跟，溢出才贴底
       for (let k = 0; k < inputVisible; k++) {
         const srcLine = startLine + k;
         const text = srcLine === 0 ? this.prompt + (lines[srcLine] ?? '') : (lines[srcLine] ?? '');
@@ -176,11 +191,12 @@ export class ScreenBuffer {
     // 3. 输出 + 状态行：占据 [0, contentEnd) 行，顶部对齐
     const contentEnd = Math.max(0, inputTop - indicatorRows);
     if (contentEnd > 0) {
-      const visible = Math.min(contentEnd, content.length);
-      const start = Math.max(0, content.length - contentBottomWindow - this.scrollOffset);
+      const visible = Math.min(contentEnd, totalContent);
+      const start = Math.max(0, totalContent - contentBottomWindow - this.scrollOffset);
       for (let r = 0; r < visible; r++) {
         const src = start + r;
-        if (src >= 0 && src < content.length) writeAnsiText(grid, r, 0, content[src]);
+        const text = src < this.wrappedLines.length ? this.wrappedLines[src] : this.status!;
+        writeAnsiText(grid, r, 0, text);
       }
     }
 

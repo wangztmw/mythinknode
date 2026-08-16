@@ -14,6 +14,10 @@ export function charWidth(c: string): number {
   if ((code >= 0x3000 && code <= 0x303F) || (code >= 0xFF01 && code <= 0xFF60) ||
       (code >= 0xFFE0 && code <= 0xFFE6)) return 2;
   if (code >= 0xAC00 && code <= 0xD7AF) return 2;
+  // emoji / 双宽符号（大部分终端宽 2）。surrogate 对由 writeAnsiText/wrapLine 按 code unit
+  // 各算 1 共 2；displayWidth 按 code point 进到这里，需显式返回 2，否则「是否需折行」判错。
+  if (code >= 0x1F000 && code <= 0x1FAFF) return 2;
+  if (code >= 0x2600 && code <= 0x27BF) return 2;
   if (code < 0x20 || (code >= 0x7F && code <= 0x9F)) return 0;
   return 1;
 }

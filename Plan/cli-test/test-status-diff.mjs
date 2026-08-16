@@ -77,7 +77,7 @@ console.log('\n=== ScreenState 网格渲染回归 ===\n');
   const c = capture();
   c.ss.printPrompt();
   c.ss.rewriteInput('hi', 1, 0, 5);
-  c.ss.submitInput();
+  c.ss.submitInput("hi");
   assert('submitInput：输入块隐藏', c.ss.snapshot()[ROWS - 1] === '');
 }
 
@@ -124,7 +124,7 @@ console.log('\n=== ScreenState 网格渲染回归 ===\n');
   const c = capture();
   c.ss.printPrompt();
   c.ss.rewriteInput('hi', 1, 0, 5);
-  c.ss.submitInput();
+  c.ss.submitInput("hi");
   c.ss.beginStatus(`  ● ${B}Thinking${b} (0.0s)`, false);
   c.ss.endStatus(`  ● ${B}Thinking${b} (0.5s)`);
   c.ss.writeLines('result text');

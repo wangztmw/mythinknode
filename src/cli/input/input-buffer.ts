@@ -57,6 +57,7 @@ export function createInputBuffer(ss: ScreenState) {
     if (effect.exit) { ss.leaveAltScreen(); ss.emit('\nBye.\n'); process.exit(0); return; }
 
     if (effect.submit != null) {
+      const rawText = model.chars.join('');  // 捕获原始输入（清空前），供提交行进历史
       model.chars = [];
       model.cursor = 0;
       if (resolveLine) {
@@ -64,7 +65,7 @@ export function createInputBuffer(ss: ScreenState) {
         resolveLine = null;
         resolve(effect.submit);
       }
-      if (effect.newline) ss.submitInput();
+      if (effect.newline) ss.submitInput(rawText);
       return;
     }
 

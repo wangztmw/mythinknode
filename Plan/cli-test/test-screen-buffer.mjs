@@ -101,7 +101,7 @@ console.log('\n=== ScreenBuffer 回归 ===\n');
   const sb = new ScreenBuffer(6, 20);
   sb.setPrompt('P> ');
   sb.setInput('hi', { line: 0, col: 5 });
-  sb.commitInput();
+  sb.commitInput('hi');
   const snap = sb.snapshot();
   assert('commitInput：输入行进历史', snap[0] === 'P> hi');
   assert('commitInput：输入块隐藏', snap[5] === '');
@@ -115,6 +115,17 @@ console.log('\n=== ScreenBuffer 回归 ===\n');
   const snap = sb.snapshot();
   assert('resize：rows/cols 更新', sb.rows === 4 && sb.cols === 10);
   assert('resize：内容在新尺寸网格重绘', snap[0] === 'a' && snap[1] === 'b' && snap.length === 4);
+}
+
+// 11. resize 重折行：缩窄后旧内容按新宽度重新折行，不截断（「内容消失」bug 的回归）
+{
+  const sb = new ScreenBuffer(6, 30);
+  sb.writeOutput('这是一段很长的中文内容需要折行显示测试');
+  sb.resize(6, 12);
+  const snap = sb.snapshot();
+  const full = snap.filter((r) => r !== '').join('');
+  assert('resize 重折行：内容完整不丢失', full === '这是一段很长的中文内容需要折行显示测试');
+  assert('resize 重折行：每行 ≤ 新宽度', snap.every((r) => [...r].reduce((w, c) => w + (/[一-鿿]/.test(c) ? 2 : 1), 0) <= 12));
 }
 
 console.log(`\n=== 结果: ${PASS} 通过, ${FAIL} 失败 ===\n`);
