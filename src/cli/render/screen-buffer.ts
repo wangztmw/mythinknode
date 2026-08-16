@@ -111,13 +111,16 @@ export class ScreenBuffer {
   clearInput(): void { this.inputText = ''; this.inputActive = false; this._render(); }
 
   /** 提交输入块进 scrollback（原生屏语义：按回车后输入行留在历史里），然后隐藏输入块。
-   *  rawText = 用户原始输入（未折行、未清洗），存原始行以便 resize 时重新折行。 */
+   *  rawText = 用户原始输入（未折行、未清洗），存原始行以便 resize 时重新折行。
+   *  提交后追加一个空行 —— 模拟「回车换行」：输入锚点在屏幕底部按回车时，
+   *  后续内容（thinking/回复）在这空行之上渲染，产生自然滚动的换行效果。 */
   commitInput(rawText: string): void {
     if (!this.inputActive) return;
     const lines = rawText.split('\n');
     for (let k = 0; k < lines.length; k++) {
       this._pushRawLine(k === 0 ? this.prompt + lines[k] : lines[k]);
     }
+    this._pushRawLine('');  // 空行：回车换行，后续内容渲染在此之后
     this.inputText = '';
     this.inputActive = false;
     this._render();
