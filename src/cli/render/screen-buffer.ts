@@ -213,11 +213,13 @@ export class ScreenBuffer {
   flush(): void {
     const patches = diff(this.prevViewport, this.viewport);
     let out = patchesToANSI(patches);
-    // 光标定位：只在光标目标变化时输出（提交后视觉无 diff 但光标要移到下一行）
+    // 光标定位：补丁写了字符会移动光标（如状态行秒数变化），必须重新定位到目标；
+    // 或目标变化（提交后视觉无 diff 但光标要移到下一行）。
     const target = this.inputActive
       ? this.cursorScreen
       : { row: this.endRow, col: 0 };
-    if (target.row !== this.prevCursorTarget.row || target.col !== this.prevCursorTarget.col) {
+    const targetChanged = target.row !== this.prevCursorTarget.row || target.col !== this.prevCursorTarget.col;
+    if (patches.length > 0 || targetChanged) {
       out += `\x1b[${target.row + 1};${target.col + 1}H`;
       this.prevCursorTarget = target;
     }
