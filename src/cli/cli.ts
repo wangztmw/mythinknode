@@ -13,11 +13,7 @@ import { createInputBuffer } from './input/input-buffer.js';
 export function createCLI() {
   const PROMPT = `${C}${B}mythinknode${b}${c} ${B}>>>${b} `;
   const ss = new ScreenState(PROMPT);
-  // 进入备用屏：grid 光标重绘 = 固定屏幕语义，且避开 Terminal.app 原生滚动（崩溃源）。
-  // close() / Ctrl+C 里 leaveAltScreen() 恢复主屏。
-  ss.enterAltScreen();
-  // 终端尺寸变化：网格跟随重绘（否则旧尺寸的网格会错位/留空白）
-  process.stdout.on('resize', () => ss.onResize());
+  // 主屏模式：输出走原生滚动（滚动条可见），输入块走 O(1) 追加 echo（低写频，避免 nano 崩溃）。
   const input = createInputBuffer(ss);
   const renderer = createRenderer(ss);
 
@@ -28,7 +24,7 @@ export function createCLI() {
     renderError: renderer.renderError,
     startRender: renderer.startRender,
     showHelp: renderer.showHelp,
-    // 备用屏启动后，banner 也要进 grid（否则 console.log 写主屏会被隐藏）
+    // banner 直接写主屏（原生滚动）
     writeLines: (text: string) => ss.writeLines(text),
     close: input.close,
   };

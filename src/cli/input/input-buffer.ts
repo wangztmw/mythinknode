@@ -37,27 +37,12 @@ export function createInputBuffer(ss: ScreenState) {
   process.stdin.on('data', (chunk: string) => {
     if (closed) return;
 
-    // 自实现 scrollback（B6）：PgUp/PgDn + 鼠标滚轮 滚动输出，不进输入模型
-    const page = Math.max(1, ss.rows - 1);
-    // SGR 鼠标滚轮：\x1b[<b;x;yM（b=64 上滚 / 65 下滚）
-    const wheel = /^\x1b\[<(\d+);\d+;\d+[Mm]/.exec(chunk);
-    if (wheel) {
-      const btn = parseInt(wheel[1]);
-      if (btn === 64) ss.scrollBy(page);    // 滚轮上 → 看更早
-      else if (btn === 65) ss.scrollBy(-page);  // 滚轮下 → 看更近
-      return;  // 其他鼠标事件（点击等）忽略
-    }
-    if (chunk === '\x1b[5~') { ss.scrollBy(page); return; }   // PgUp 向上
-    if (chunk === '\x1b[6~') { ss.scrollBy(-page); return; }  // PgDn 向下
-    // 非滚动输入：若在回滚态，先回到底（打字/编辑/提交都先回到最新输出）
-    if (ss.scrolledBack) ss.scrollToBottom();
-
+    const oldCursor = model.cursor;
     const effect = applyChunk(model, chunk);
 
-    if (effect.exit) { ss.leaveAltScreen(); ss.emit('\nBye.\n'); process.exit(0); return; }
+    if (effect.exit) { ss.emit('\nBye.\n'); process.exit(0); return; }
 
     if (effect.submit != null) {
-      const rawText = model.chars.join('');  // 捕获原始输入（清空前），供提交行进历史
       model.chars = [];
       model.cursor = 0;
       if (resolveLine) {
@@ -65,14 +50,18 @@ export function createInputBuffer(ss: ScreenState) {
         resolveLine = null;
         resolve(effect.submit);
       }
-      if (effect.newline) ss.submitInput(rawText);
+      if (effect.newline) ss.submitInput(effect.submit);
       return;
     }
 
-    if (effect.edit === 'append' || effect.edit === 'redraw') {
-      // 统一全量重绘：grid diff 已只写变化 cell（追加时只写新字符、编辑时只写改动区），
-      // 不再触发 \x1b[J 全屏清（高频 \x1b[J 会腐败 nano malloc，输入法一打字就 SIGTRAP），
-      // 也不软折行（软折行超长会触发 Terminal 渲染 bug 导致缺字）。append/redraw 两路合一。
+    if (effect.edit === 'append') {
+      // 追加 O(1) 折行 echo：oldCursor 处只读到旧字符（push 仅追加在后），
+      // 一次写入、不触发 \x1b[J（高频 \x1b[J 会腐败 nano malloc，输入法一打字就 SIGTRAP），
+      // 也不软折行（软折行超长会触发 Terminal 渲染 bug 导致缺字）。两者兼顾。
+      const { col: startCol } = ss.cursorPos(model.chars, oldCursor);
+      const newChars = model.chars.slice(oldCursor);
+      ss.appendInput(ss.foldInput(newChars, startCol), ss.contentLines(model.chars));
+    } else if (effect.edit === 'redraw') {
       redraw();
     }
   });
@@ -97,8 +86,7 @@ export function createInputBuffer(ss: ScreenState) {
 
     close(): void {
       closed = true;
-      // 恢复主屏 + 关闭 bracketed paste + 恢复 raw mode，避免退出后终端状态残留
-      ss.leaveAltScreen();
+      // 关闭 bracketed paste + 恢复 raw mode，避免退出后终端状态残留
       ss.emit('\x1b[?2004l');
       if (typeof process.stdin.setRawMode === 'function') {
         try { process.stdin.setRawMode(false); } catch { /* 忽略 */ }
