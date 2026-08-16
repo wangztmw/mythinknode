@@ -57,5 +57,14 @@ console.log('\n=== ScreenBuffer 回归 ===\n');
   assert('滚动后 flush 有输出', out.length > 0);
 }
 
+// 6. ANSI bold 输出：解析成样式，不把 \x1b 当字面量写进网格
+{
+  const sb = new ScreenBuffer(3, 20);
+  sb.writeOutput('\x1b[1mHead\x1b[22m body');
+  const snap = sb.snapshot();
+  assert('ANSI bold 输出：snapshot 不含 \\x1b', !snap[0].includes('\x1b'));
+  assert('ANSI bold 输出：文本正确', snap[0] === 'Head body');
+}
+
 console.log(`\n=== 结果: ${PASS} 通过, ${FAIL} 失败 ===\n`);
 process.exit(FAIL > 0 ? 1 : 0);

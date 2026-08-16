@@ -12,6 +12,31 @@ export interface Cell {
 
 export const STYLE_BOLD = 1;
 
+/** 解析 ANSI SGR（仅 bold），把带样式的文本写入网格。返回下一个列号。 */
+export function writeAnsiText(grid: CellGrid, row: number, col: number, text: string): number {
+  let style = 0;
+  let c = col;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\x1b' && text[i + 1] === '[') {
+      const m = /^\x1b\[([0-9;]*)m/.exec(text.slice(i));
+      if (m) {
+        const codes = m[1].split(';');
+        if (codes.includes('1')) style = STYLE_BOLD;
+        else if (codes.includes('22') || codes.includes('0')) style = 0;
+        i += m[0].length - 1;
+      }
+      continue;
+    }
+    const ch = text[i];
+    const w = charWidth(ch);
+    if (c + w > grid.cols) break;
+    grid.set(row, c, ch, style);
+    if (w === 2) grid.set(row, c + 1, '', style);
+    c += w;
+  }
+  return c;
+}
+
 export class CellGrid {
   readonly rows: number;
   readonly cols: number;

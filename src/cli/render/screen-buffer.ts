@@ -6,7 +6,7 @@
  * 关键：cursor 定位重绘 = 固定屏幕（备用屏）语义，不与主屏原生滚动混用。
  * 纯逻辑，零 I/O（out 回调注入）。
  */
-import { CellGrid } from './cell-grid.js';
+import { CellGrid, writeAnsiText } from './cell-grid.js';
 import { diff } from './diff.js';
 import { patchesToANSI } from './emitter.js';
 import { wrapLine } from './term-wrap.js';
@@ -52,7 +52,7 @@ export class ScreenBuffer {
     const start = Math.max(0, this.scrollback.length - this.rows - this.scrollOffset);
     for (let r = 0; r < this.rows; r++) {
       const src = start + r;
-      if (src >= 0 && src < this.scrollback.length) this.viewport.write(r, 0, this.scrollback[src], 0);
+      if (src >= 0 && src < this.scrollback.length) writeAnsiText(this.viewport, r, 0, this.scrollback[src]);
     }
   }
 
