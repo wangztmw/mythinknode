@@ -69,14 +69,17 @@ function renderProgress(event: ProgressEvent, ss: ScreenState): void {
       }
       case 'tool_display': {
         // 首行 \r 覆盖 tick 的状态行（"● Bash (0.0s)"），其余行正常换行；每行折行避免超长（工具 sample 可能多行）
+        // 批量写：攒成一个字符串，一次 emit，减少终端重绘次数
         const text = renderMergedTools(event.calls, event.elapsedMs, cols);
+        let out = '';
         let first = true;
         for (const line of text.split('\n')) {
           for (const row of wrapLine(line, cols)) {
-            ss.emit(`${first ? '\r' : ''}${row}\x1b[K\n`);
+            out += `${first ? '\r' : ''}${row}\x1b[K\n`;
             first = false;
           }
         }
+        ss.emit(out);
         ss.markStatus(false);
         break;
       }

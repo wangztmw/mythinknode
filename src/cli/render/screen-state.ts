@@ -144,11 +144,14 @@ export class ScreenState {
   writeLines(text: string): void {
     // I2：若有活状态行悬挂，先收尾
     if (this._statusActive) this.emit('\n');
+    // 批量写：攒成一个字符串，一次 emit，减少终端重绘次数（nano 崩溃的写频机制）
+    let out = '';
     for (const line of text.split('\n')) {
       for (const row of wrapLine(line, this.cols)) {
-        this.emit(row + '\n');
+        out += row + '\n';
       }
     }
+    this.emit(out);
     this._setStatusActive(false);
   }
 }

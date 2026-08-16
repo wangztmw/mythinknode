@@ -95,5 +95,14 @@ console.log('\n=== 状态行 diff 回归 ===\n');
   assert('名字变化：最终显示正确（回退整行写）', simulateLine(c.out) === display(target));
 }
 
+// 6. writeLines 批量写：多行只触发一次 emit
+{
+  let calls = 0;
+  const ss = new ScreenState('P> ');
+  ss.emit = () => { calls++; };
+  ss.writeLines('line1\nline2\nline3\nline4\nline5');
+  assert('writeLines 5 行只触发 1 次 emit（批量写）', calls === 1);
+}
+
 console.log(`\n=== 结果: ${PASS} 通过, ${FAIL} 失败 ===\n`);
 process.exit(FAIL > 0 ? 1 : 0);
