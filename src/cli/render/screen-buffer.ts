@@ -126,6 +126,18 @@ export class ScreenBuffer {
     this._render();
   }
 
+  /** 移除 scrollback 末尾的空行（回车提交时加的那个换行空行）。第一个 thinking
+   *  直接「填」进这个空行里，而不是另起一行 —— 这样指令和 thinking 之间不留空行，
+   *  空行只是回车瞬间的自然换行（随后被 thinking 填满）。 */
+  discardTrailingBlank(): void {
+    if (this.rawLines.length > 0 && this.rawLines[this.rawLines.length - 1] === '') {
+      this.rawLines.pop();
+    }
+    if (this.wrappedLines.length > 0 && this.wrappedLines[this.wrappedLines.length - 1] === '') {
+      this.wrappedLines.pop();
+    }
+  }
+
   /** 终端尺寸变化：更新网格尺寸，重建折行缓存（按新 cols 重折），触发全量重绘。 */
   resize(rows: number, cols: number): void {
     if (rows === this.rows && cols === this.cols) return;

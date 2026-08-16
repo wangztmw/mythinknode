@@ -96,10 +96,15 @@ export class ScreenState {
 
   // ---- 输出原语（写 grid） ----
 
-  /** 写一条新状态行（thinking_start）。leadingNewline 时先垫一空行（后续 thinking 分隔）。 */
+  /** 写一条新状态行（thinking_start）。leadingNewline 时先垫一空行（后续 thinking 分隔）；
+   *  第一个 thinking（leadingNewline=false）则「填」掉回车提交时加的空行，不留空行。 */
   beginStatus(content: string, leadingNewline: boolean): void {
     if (this.sb.hasStatus) this.sb.discardStatus();  // 防御：不应发生
-    if (leadingNewline) this.sb.writeOutput('');     // 空行分隔
+    if (leadingNewline) {
+      this.sb.writeOutput('');                       // 连续 thinking 之间空行分隔
+    } else {
+      this.sb.discardTrailingBlank();                // 第一个 thinking 填进回车空行
+    }
     this.sb.setStatus(content);
     this.sb.flush();
   }
