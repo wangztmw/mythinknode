@@ -238,9 +238,17 @@ export class ScreenBuffer {
     let out = patchesToANSI(patches);
     // 光标定位：补丁写了字符会移动光标（如状态行秒数变化），必须重新定位到目标；
     // 或目标变化（提交后视觉无 diff 但光标要移到下一行）。
-    const target = this.inputActive
+    const rawTarget = this.inputActive
       ? this.cursorScreen
       : { row: this.endRow, col: this.endCol };
+    // 光标列钳到 cols-1：pending-wrap（col==cols，输入恰好铺满一行）时列越界，
+    // 若发 \x1b[r;cols+1H 会让 Terminal.app 越界换行/滚动 ——「行末疯狂滚动」的根因。
+    // 行钳到 [0, rows-1]：长输入折行超过可见窗时，光标在窗口之上（Home/↑）会让
+    // cursor.line - startLine < 0 → 负行号越界。
+    const target = {
+      row: Math.min(Math.max(rawTarget.row, 0), this.rows - 1),
+      col: Math.min(rawTarget.col, this.cols - 1),
+    };
     const targetChanged = target.row !== this.prevCursorTarget.row || target.col !== this.prevCursorTarget.col;
     if (patches.length > 0 || targetChanged) {
       out += `\x1b[${target.row + 1};${target.col + 1}H`;

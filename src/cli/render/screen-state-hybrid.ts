@@ -163,7 +163,12 @@ export class HybridScreenState {
     const patches = diff(this.prevViewport, this.viewport);
     let out = patchesToANSI(patches);
 
-    const target = this.inputActive ? this.cursorScreen : { row: this.endRow, col: this.endCol };
+    const rawTarget = this.inputActive ? this.cursorScreen : { row: this.endRow, col: this.endCol };
+    // 列钳到 cols-1（pending-wrap col==cols 越界）；行钳到 [0, rows-1]（长输入折行超窗 + Home → 负行号）。
+    const target = {
+      row: Math.min(Math.max(rawTarget.row, 0), this._rows - 1),
+      col: Math.min(rawTarget.col, this._cols - 1),
+    };
     const targetChanged = target.row !== this.prevCursorTarget.row || target.col !== this.prevCursorTarget.col;
     if (patches.length > 0 || targetChanged) {
       out += `\x1b[${target.row + 1};${target.col + 1}H`;

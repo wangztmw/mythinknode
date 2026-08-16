@@ -128,5 +128,27 @@ console.log('\n=== ScreenBuffer 回归 ===\n');
   assert('resize 重折行：每行 ≤ 新宽度', snap.every((r) => [...r].reduce((w, c) => w + (/[一-鿿]/.test(c) ? 2 : 1), 0) <= 12));
 }
 
+// 12. 光标列钳位：输入铺满行（pending-wrap，col==cols）不发越界列 \x1b[r;cols+1H
+//     （否则 Terminal.app 收到越界列会换行/滚动 ——「行末疯狂滚动」的根因）
+{
+  let out = '';
+  const sb = new ScreenBuffer(3, 5, (s) => { out += s; });
+  sb.setPrompt('> ');                              // prompt 2 列
+  sb.setInput('abc', { line: 0, col: 5 });         // 2 + 3 = 5 = cols，pending-wrap
+  sb.flush();
+  assert('pending-wrap 光标列不越界（无 \\x1b[1;6H）', !out.includes('\x1b[1;6H'));
+  assert('pending-wrap 光标落在末列（\\x1b[1;5H）', out.includes('\x1b[1;5H'));
+}
+
+// 13. 光标行钳位：长输入折行超过可见窗 + 光标在窗口之上（Home）不发负行号
+{
+  let out = '';
+  const sb = new ScreenBuffer(6, 20, (s) => { out += s; });
+  sb.setPrompt('> ');
+  sb.setInput('a\nb\nc\nd\ne\nf\ng\nh', { line: 0, col: 2 });  // 8 行 > 6 行，光标 Home 在行 0
+  sb.flush();
+  assert('长输入+Home 不发负行号（无 \\x1b[-）', !/\\x1b\[-/.test(out));
+}
+
 console.log(`\n=== 结果: ${PASS} 通过, ${FAIL} 失败 ===\n`);
 process.exit(FAIL > 0 ? 1 : 0);
