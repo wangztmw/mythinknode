@@ -14,6 +14,7 @@ import { contentLines as geomContentLines, cursorPos as geomCursorPos, foldInput
 
 const THROTTLE_TICK_MS = 16;   // 对齐终端 ~60fps 帧
 const THROTTLE_LINES_PER_TICK = 10;  // 每帧最多写这么多行，摊开滚动爆发
+const INPUT_RESERVE_ROWS = 6;  // 底部固定给输入块的行数（DECSTBM 预留区，折行不触发原生滚动）
 
 export class ScreenState {
   private prompt: string;
@@ -75,6 +76,12 @@ export class ScreenState {
     this._flushPendingSync();  // 先把节流的输出写完，prompt 才接得上
     // I2：若有活状态行悬挂，先收尾
     if (this._statusActive) this.emit('\n');
+    // 预留输入区（DECSTBM）：输出在 [1, rows-reserve] 滚动（保留滚动条），
+    // 输入块固定在 [rows-reserve+1, rows]，折行不触发原生滚动（nano 崩溃源）
+    const rows = process.stdout.rows || 24;
+    const reserve = Math.min(INPUT_RESERVE_ROWS, Math.max(1, rows - 1));
+    this.emit(`\x1b[1;${rows - reserve}r`);
+    this.emit(`\x1b[${rows - reserve + 1};1H`);
     this.emit(this.prompt);
     this._inputRows = 1;
     this._setStatusActive(false);
@@ -107,9 +114,10 @@ export class ScreenState {
     this._inputRows = newRows;
   }
 
-  /** 提交：写 \n 收尾输入块（原生屏语义：输入行留在 scrollback 历史里）。 */
+  /** 提交：重置滚动区为全屏，写 \n 收尾输入块（原生屏语义：输入行留在 scrollback 历史里）。 */
   submitInput(_rawText: string): void {
     this._flushPendingSync();
+    this.emit('\x1b[r');  // 重置 DECSTBM 滚动区为全屏
     this.emit('\n');
     this._inputRows = 0;
     this._setStatusActive(false);
