@@ -1,95 +1,137 @@
-// 状态行 diff 回归测试 —— 链接 screen-state 的 beginStatus/overwriteStatus（主屏原生版）
+// ScreenState 网格渲染回归测试 —— 链接 screen-state 的 grid 集成
 // 用法: node Plan/cli-test/test-status-diff.mjs（需先 npm run build）
 //
-// 目标：验证心跳「前缀 diff」既降写频（字节数下降），又不破坏最终显示（单行终端模拟）。
+// 目标：验证 grid 渲染（状态行 diff + 输出 + 输入块）既降写频（字节下降），
+// 又不破坏最终显示（网格终端模拟 + snapshot 往返一致）。
 import { ScreenState } from '../../dist/cli/render/screen-state.js';
+import { CellGrid } from '../../dist/cli/render/cell-grid.js';
+import { charWidth } from '../../dist/cli/render/term-wrap.js';
 
 const B = '\x1b[1m', b = '\x1b[22m';
+const ROWS = 8, COLS = 24;
 
 let PASS = 0, FAIL = 0;
 function assert(name, cond) { if (cond) { PASS++; console.log(`  ✅ ${name}`); } else { FAIL++; console.log(`  ❌ ${name}`); } }
 
+function display(s) { return s.replace(/\x1b\[[0-9;]*m/g, ''); }
+
+// 网格终端模拟器：把 flush 的 ANSI 字节串应用到一个已有网格（还原屏幕状态）
+function applyANSI(prev, ansi) {
+  const grid = prev.clone();
+  let row = 0, col = 0, style = 0;
+  for (let i = 0; i < ansi.length; i++) {
+    if (ansi[i] !== '\x1b') {
+      const ch = ansi[i];
+      grid.set(row, col, ch, style);
+      const w = charWidth(ch);
+      if (w === 2) grid.set(row, col + 1, '', style);
+      col += w;
+      continue;
+    }
+    const pos = /^\x1b\[(\d+);(\d+)H/.exec(ansi.slice(i));
+    if (pos) { row = parseInt(pos[1]) - 1; col = parseInt(pos[2]) - 1; i += pos[0].length - 1; continue; }
+    const sgr = /^\x1b\[(1|22|0)m/.exec(ansi.slice(i));
+    if (sgr) { style = sgr[1] === '1' ? 1 : 0; i += sgr[0].length - 1; continue; }
+  }
+  return grid;
+}
+
+// 网格 → 行字符串（同 ScreenBuffer.snapshot 的显示语义）
+function gridToRows(grid) {
+  const rows = [];
+  for (let r = 0; r < grid.rows; r++) {
+    let s = '';
+    for (let c = 0; c < grid.cols; c++) { const cell = grid.get(r, c); if (cell.ch !== '') s += cell.ch; }
+    rows.push(s.trimEnd());
+  }
+  return rows;
+}
+
 function capture() {
   let out = '';
-  const ss = new ScreenState('P> ');
+  const ss = new ScreenState('P> ', { rows: ROWS, cols: COLS });
   ss.emit = (raw) => { out += raw; };
   return { ss, get out() { return out; } };
 }
 
-// 单行终端模拟器：解释 \r / \x1b[nC / \x1b[K / 字符写（ANSI m 忽略）
-function simulateLine(raw) {
-  let line = '', col = 0;
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i];
-    if (ch === '\r') { col = 0; continue; }
-    if (ch === '\x1b') {
-      const m = /^\x1b\[([0-9;]*)([A-Za-z])/.exec(raw.slice(i));
-      if (m) {
-        const params = m[1].split(';').map(Number);
-        const cmd = m[2];
-        if (cmd === 'C') col += params[0] || 1;
-        else if (cmd === 'K') line = line.slice(0, col);
-        i += m[0].length - 1;
-      }
-      continue;
-    }
-    line = line.slice(0, col) + ch + line.slice(col + 1);
-    col += 1;
-  }
-  return line;
-}
+console.log('\n=== ScreenState 网格渲染回归 ===\n');
 
-function display(s) { return s.replace(/\x1b\[[0-9;]*m/g, ''); }
-
-console.log('\n=== 状态行 diff 回归 ===\n');
-
-// 1. begin + 一次 overwrite（秒数 0.0s→1.0s）：最终显示正确 + 字节下降
+// 1. prompt 贴底
 {
   const c = capture();
-  const c0 = `  ● ${B}Thinking${b} (0.0s) — analyzing`;
-  const c1 = `  ● ${B}Thinking${b} (1.0s) — analyzing`;
+  c.ss.printPrompt();
+  const snap = c.ss.snapshot();
+  assert('printPrompt：无内容时 prompt 在顶部', snap[0] === 'P>' && snap[ROWS - 1] === '');
+}
+
+// 2. 输入回显
+{
+  const c = capture();
+  c.ss.printPrompt();
+  c.ss.rewriteInput('hi', 1, 0, 5);
+  assert('rewriteInput：prompt+输入', c.ss.snapshot()[0] === 'P> hi');
+}
+
+// 3. 提交隐藏输入块
+{
+  const c = capture();
+  c.ss.printPrompt();
+  c.ss.rewriteInput('hi', 1, 0, 5);
+  c.ss.submitInput("hi");
+  assert('submitInput：输入块隐藏', c.ss.snapshot()[ROWS - 1] === '');
+}
+
+// 4. 状态行在顶部 + 覆盖
+{
+  const c = capture();
+  const c0 = `  ● ${B}Thinking${b} (0.0s)`;
   c.ss.beginStatus(c0, false);
+  assert('beginStatus：状态行顶部', c.ss.snapshot()[0] === display(c0));
+  const c1 = `  ● ${B}Thinking${b} (1.0s)`;
   c.ss.overwriteStatus(c1);
-  const fullRewrite = `\r${c0}\x1b[K\r${c1}\x1b[K`;
-  assert('秒数变化：最终显示正确', simulateLine(c.out) === display(c1));
-  assert('秒数变化：diff 字节 < 两次整行写', c.out.length < fullRewrite.length);
-  assert('秒数变化：不重复写前缀「  ● 」', c.out.indexOf('  ● ') === c.out.lastIndexOf('  ● '));
+  assert('overwriteStatus：最终内容', c.ss.snapshot()[0] === display(c1));
 }
 
-// 2. 连续多次 overwrite（1.0s→2.0s→3.0s）：最终显示正确
+// 5. 心跳 diff 字节下降（只写变化 cell，不整行重写）
 {
   const c = capture();
-  c.ss.beginStatus(`  ● ${B}Thinking${b} (1.0s) — analyzing`, false);
-  const target = `  ● ${B}Thinking${b} (3.0s) — analyzing`;
-  c.ss.overwriteStatus(`  ● ${B}Thinking${b} (2.0s) — analyzing`);
-  c.ss.overwriteStatus(target);
-  assert('连续心跳：最终显示正确', simulateLine(c.out) === display(target));
+  c.ss.beginStatus(`  ● ${B}Thinking${b} (0.0s)`, false);
+  const before = c.out.length;
+  c.ss.overwriteStatus(`  ● ${B}Thinking${b} (1.0s)`);
+  const delta = c.out.length - before;
+  assert('心跳 diff：只写变化 cell（字节 < 整行）', delta > 0 && delta < 20);
 }
 
-// 3. 名字变化（Thinking→Bash，diff 点落在粗体段内）：回退整行写，最终显示正确
-{
-  const c = capture();
-  c.ss.beginStatus(`  ● ${B}Thinking${b} (0.0s) — analyzing`, false);
-  const target = `  ● ${B}Bash${b} (0.0s)`;
-  c.ss.overwriteStatus(target);
-  assert('名字变化：最终显示正确（回退整行写）', simulateLine(c.out) === display(target));
-}
-
-// 4. endStatus 定稿（\r 覆盖 + \n 收尾）
+// 6. endStatus 定稿为输出行
 {
   const c = capture();
   c.ss.beginStatus(`  ● ${B}Thinking${b} (0.0s)`, false);
   c.ss.endStatus(`  ● ${B}Thinking${b} (0.5s)`);
-  assert('endStatus：\r 覆盖 + \n 收尾', c.out.endsWith('\n') && c.out.includes('\r'));
+  assert('endStatus：定稿为输出行', c.ss.snapshot()[0] === '  ● Thinking (0.5s)');
 }
 
-// 5. writeLines 节流：多行同步不写（异步摊开滚动爆发）
+// 7. writeLines 追加输出
 {
-  let sync = 0;
-  const ss = new ScreenState('P> ');
-  ss.emit = () => { sync++; };
-  ss.writeLines('line1\nline2\nline3\nline4\nline5');
-  assert('writeLines 5 行：同步不写（节流摊开）', sync === 0);
+  const c = capture();
+  c.ss.endStatus(`  ● ${B}Thinking${b} (0.5s)`);
+  c.ss.writeLines('hello\nworld');
+  const snap = c.ss.snapshot();
+  assert('writeLines：输出追加', snap[0] === '  ● Thinking (0.5s)' && snap[1] === 'hello' && snap[2] === 'world');
+}
+
+// 8. 全流程往返：flush 的 ANSI 还原 == snapshot
+{
+  const c = capture();
+  c.ss.printPrompt();
+  c.ss.rewriteInput('hi', 1, 0, 5);
+  c.ss.submitInput("hi");
+  c.ss.beginStatus(`  ● ${B}Thinking${b} (0.0s)`, false);
+  c.ss.endStatus(`  ● ${B}Thinking${b} (0.5s)`);
+  c.ss.writeLines('result text');
+  const rebuilt = applyANSI(new CellGrid(ROWS, COLS), c.out);
+  const rebuiltRows = gridToRows(rebuilt);
+  const snapRows = c.ss.snapshot();
+  assert('全流程往返：ANSI 还原 == snapshot', JSON.stringify(rebuiltRows) === JSON.stringify(snapRows));
 }
 
 console.log(`\n=== 结果: ${PASS} 通过, ${FAIL} 失败 ===\n`);
