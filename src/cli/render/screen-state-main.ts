@@ -10,6 +10,7 @@
  */
 import { displayWidth, wrapLine } from './term-wrap.js';
 import { contentLines as geomContentLines, cursorPos as geomCursorPos, foldInput as geomFoldInput } from '../input/input-geometry.js';
+import type { InputDriver } from './types.js';
 
 export class MainScreenState {
   private prompt: string;
@@ -161,4 +162,15 @@ export class MainScreenState {
     }
     return bold;
   }
+}
+
+/** 主屏输入驱动：无滚动键、无备用屏，追加走 O(1) appendInput（只写新字符）。 */
+export function createMainDriver(ss: MainScreenState): InputDriver {
+  return {
+    append(chars: string[], oldCursor: number): void {
+      const { col: startCol } = ss.cursorPos(chars, oldCursor);
+      const newChars = chars.slice(oldCursor);
+      ss.appendInput(ss.foldInput(newChars, startCol), ss.contentLines(chars));
+    },
+  };
 }

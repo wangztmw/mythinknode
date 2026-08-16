@@ -15,6 +15,7 @@
 import { ScreenBuffer } from './screen-buffer.js';
 import { displayWidth } from './term-wrap.js';
 import { contentLines as geomContentLines, cursorPos as geomCursorPos, foldInput as geomFoldInput } from '../input/input-geometry.js';
+import type { InputDriver } from './types.js';
 
 export class ScreenState {
   private prompt: string;
@@ -129,4 +130,25 @@ export class ScreenState {
   // ---- 调试/测试 ----
 
   snapshot(): string[] { return this.sb.snapshot(); }
+}
+
+/** 备用屏输入驱动：滚动键（PgUp/PgDn/滚轮）+ grid redraw 追加 + 退出恢复主屏。 */
+export function createAltDriver(ss: ScreenState): InputDriver {
+  return {
+    consumeChunk(chunk: string): boolean {
+      const page = Math.max(1, ss.rows - 1);
+      if (chunk === '\x1b[5~') { ss.scrollBy(page); return true; }   // PgUp 向上
+      if (chunk === '\x1b[6~') { ss.scrollBy(-page); return true; }  // PgDn 向下
+      if (chunk === '\x1b[A') { ss.scrollBy(page); return true; }    // 滚轮上 → 看更早
+      if (chunk === '\x1b[B') { ss.scrollBy(-page); return true; }   // 滚轮下 → 看更近
+      if (ss.scrolledBack) ss.scrollToBottom();  // 非滚动输入先回底
+      return false;
+    },
+    append(chars: string[], _oldCursor: number): void {
+      // 统一全量重绘：grid diff 只写变化 cell
+      const { line, col } = ss.cursorPos(chars, chars.length);
+      ss.rewriteInput(ss.foldInput(chars), ss.contentLines(chars), line, col);
+    },
+    cleanup(): void { ss.leaveAltScreen(); },
+  };
 }

@@ -5,10 +5,7 @@
 import type { ProgressEvent, MergedTool } from '../../agent/progress.js';
 import { mdToANSI, B, b } from './ansi.js';
 import { displayWidth, charWidth, wrapLine } from './term-wrap.js';
-import type { ScreenState } from './screen-state.js';
-import type { MainScreenState } from './screen-state-main.js';
-
-export type AnyScreenState = ScreenState | MainScreenState;
+import type { ScreenStateLike } from './types.js';
 
 const THINKING_PHASES = new Set(['analyzing', 'continuing', 'reviewing results', 'summarizing agent results', 'processing']);
 
@@ -32,7 +29,7 @@ function phaseLabel(label: string): string {
   return THINKING_PHASES.has(label) ? 'Thinking' : label;
 }
 
-function renderProgress(event: ProgressEvent, ss: AnyScreenState): void {
+function renderProgress(event: ProgressEvent, ss: ScreenStateLike): void {
   try {
     const cols = ss.cols;
     const wide = cols >= 60;
@@ -98,7 +95,7 @@ function renderMergedTools(merged: MergedTool[], elapsedMs: number | undefined, 
   return parts.join('\n');
 }
 
-export function createRenderer(ss: AnyScreenState) {
+export function createRenderer(ss: ScreenStateLike) {
   return {
     renderResult(text: string, ms: number, inputTokens?: number, outputTokens?: number): void {
       const s = (ms / 1000).toFixed(1);

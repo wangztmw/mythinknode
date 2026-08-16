@@ -4,28 +4,37 @@
  * 终端选择：
  *   - iTerm2（TERM_PROGRAM=iTerm.app）→ 主屏（原生滚动 + 滚动条，iTerm2 无 nano 崩溃）
  *   - Mac 原生 Terminal 等其他 → 备用屏（grid + cell-diff 光标重绘，避开 nano 崩溃）
+ *
+ * 两个模式完全解耦：各自的 ScreenState + 输入驱动（driver）独立成模块，
+ * 本文件只做选择 + 接线，不混入模式逻辑。
  */
 import { C, B, b, c } from './render/ansi.js';
-import { ScreenState } from './render/screen-state.js';
-import { MainScreenState } from './render/screen-state-main.js';
-import type { AnyScreenState } from './render/renderer.js';
+import { ScreenState, createAltDriver } from './render/screen-state.js';
+import { MainScreenState, createMainDriver } from './render/screen-state-main.js';
+import type { ScreenStateLike, InputDriver } from './render/types.js';
 import { createRenderer } from './render/renderer.js';
 import { createInputBuffer } from './input/input-buffer.js';
-import type { ScreenMode } from './input/input-buffer.js';
 
 export function createCLI() {
   const PROMPT = `${C}${B}mythinknode${b}${c} ${B}>>>${b} `;
-  // iTerm2 → 主屏（原生滚动）；Mac 原生 Terminal 等 → 备用屏（grid，避免 nano 崩溃）。
-  const mode: ScreenMode = process.env.TERM_PROGRAM === 'iTerm.app' ? 'main' : 'alt';
-  const ss: AnyScreenState = mode === 'main' ? new MainScreenState(PROMPT) : new ScreenState(PROMPT);
+  const isITerm2 = process.env.TERM_PROGRAM === 'iTerm.app';
 
-  if (mode === 'alt') {
-    (ss as ScreenState).enterAltScreen();
+  let ss: ScreenStateLike;
+  let driver: InputDriver;
+  if (isITerm2) {
+    const main = new MainScreenState(PROMPT);
+    ss = main;
+    driver = createMainDriver(main);
+  } else {
+    const alt = new ScreenState(PROMPT);
+    alt.enterAltScreen();
     // 终端尺寸变化：网格跟随重绘（否则旧尺寸的网格会错位/留空白）
-    process.stdout.on('resize', () => (ss as ScreenState).onResize());
+    process.stdout.on('resize', () => alt.onResize());
+    ss = alt;
+    driver = createAltDriver(alt);
   }
 
-  const input = createInputBuffer(ss, mode);
+  const input = createInputBuffer(ss, driver);
   const renderer = createRenderer(ss);
 
   return {
