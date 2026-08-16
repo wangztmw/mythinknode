@@ -55,12 +55,13 @@ export class ScreenState {
 
   // ---- 终端模式原语（不参与 grid，直接写 stdout） ----
 
-  // 备用屏（不进鼠标上报）：鼠标上报 \x1b[?1000h 会干扰豆包输入法的组合态
-  // （setMarkedText），导致光标移动/删除键异常。滚轮滚动改用 PgUp/PgDn（键盘）。
-  // \x1b[2J\x1b[H：进入后清空备用屏 + 光标归位。备用屏 buffer 会保留上一次运行的
-  // 残留内容（cell-diff 只写非空格 cell，残留的空格/旧内容会透出来），不清会串屏。
-  enterAltScreen(): void { this.emit('\x1b[?1049h\x1b[2J\x1b[H'); }
-  leaveAltScreen(): void { this.emit('\x1b[?1049l'); }
+  // 备用屏 + SGR 鼠标滚轮上报：滚轮驱动自实现 scrollback（\x1b[?1000h 上报 +
+  // \x1b[?1006h SGR 扩展）。\x1b[2J\x1b[H：进入后清空备用屏 + 光标归位，
+  // 备用屏 buffer 会保留上一次运行的残留（cell-diff 只写非空格 cell），不清会串屏。
+  // 注意：鼠标上报会拦截点击（选中文本需 Option 拖选）；且与豆包输入法组合态
+  // 可能有干扰，若光标/删除键异常再退回键盘滚动。
+  enterAltScreen(): void { this.emit('\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h'); }
+  leaveAltScreen(): void { this.emit('\x1b[?1006l\x1b[?1000l\x1b[?1049l'); }
 
   /** 终端尺寸变化：清屏 + 更新网格 + 全量重绘。 */
   onResize(): void {
@@ -143,6 +144,17 @@ export function createAltDriver(ss: ScreenState): InputDriver {
       if (chunk === '\x1b[6~') { ss.scrollBy(-page); return true; }  // PgDn 向下（整页）
       if (chunk === '\x1b[A') { ss.scrollBy(3); return true; }       // ↑ 回滚 3 行（丝滑）
       if (chunk === '\x1b[B') { ss.scrollBy(-3); return true; }      // ↓ 回底 3 行
+      // SGR 鼠标：\x1b[<b;x;yM（按下）/ \x1b[<b;x;ym（释放）。滚轮 b=64 上 / 65 下。
+      // 只在按下(M)滚动，释放(m)忽略——否则按下/释放分块到达会滚两次。点击(0/1/2)只吞不滚。
+      const mouse = /^\x1b\[<(\d+);\d+;\d+([Mm])/.exec(chunk);
+      if (mouse) {
+        if (mouse[2] === 'M') {
+          const btn = parseInt(mouse[1], 10);
+          if (btn === 64) ss.scrollBy(page);       // 滚轮上 → 看更早
+          else if (btn === 65) ss.scrollBy(-page); // 滚轮下 → 看更近
+        }
+        return true;  // 鼠标事件全消费，不进输入模型
+      }
       if (ss.scrolledBack) ss.scrollToBottom();  // 非滚动输入先回底
       return false;
     },
