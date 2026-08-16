@@ -218,10 +218,9 @@ export class ScreenBuffer {
         const text = src < this.wrappedLines.length ? this.wrappedLines[src] : this.status!;
         writeAnsiText(grid, r, 0, text);
       }
-      this.endRow = Math.min(visible, this.rows - 1);  // 内容结束的下一行（0-based，钳到末行）
-      // 光标列：内容贴底/溢出时（末行是内容），光标落在最后一行文字的末尾（跟随文字）；
-      // 否则（内容没占满）落在空行首列。
-      if (this.endRow === visible - 1) {
+      // 光标始终落在最后一行文字的末尾（跟随文字），无论内容是否占满屏幕。
+      if (visible > 0) {
+        this.endRow = visible - 1;
         const lastSrc = start + visible - 1;
         const lastText = lastSrc < this.wrappedLines.length ? this.wrappedLines[lastSrc] : this.status!;
         this.endCol = displayWidth(lastText);
