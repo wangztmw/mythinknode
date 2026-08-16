@@ -77,7 +77,7 @@ console.log('\n=== ScreenBuffer 回归 ===\n');
 
   sb.scrollBy(3);   // 回滚 3 行
   snap = sb.snapshot();
-  assert('回滚后：输出上移', snap[0] === '2' && snap[3] === '5');
+  assert('回滚后：输出上移', snap[0] === '1' && snap[3] === '4');
   assert('回滚后：指示行在输入块上方', snap[4].includes('已回滚') && snap[5] === 'P>');
 
   sb.scrollToBottom();

@@ -61,7 +61,7 @@ console.log('\n=== ScreenState 网格渲染回归 ===\n');
   const c = capture();
   c.ss.printPrompt();
   const snap = c.ss.snapshot();
-  assert('printPrompt：prompt 贴底', snap[ROWS - 1] === 'P>' && snap[0] === '');
+  assert('printPrompt：无内容时 prompt 在顶部', snap[0] === 'P>' && snap[ROWS - 1] === '');
 }
 
 // 2. 输入回显
@@ -69,7 +69,7 @@ console.log('\n=== ScreenState 网格渲染回归 ===\n');
   const c = capture();
   c.ss.printPrompt();
   c.ss.rewriteInput('hi', 1, 0, 5);
-  assert('rewriteInput：prompt+输入', c.ss.snapshot()[ROWS - 1] === 'P> hi');
+  assert('rewriteInput：prompt+输入', c.ss.snapshot()[0] === 'P> hi');
 }
 
 // 3. 提交隐藏输入块

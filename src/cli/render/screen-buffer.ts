@@ -108,49 +108,53 @@ export class ScreenBuffer {
     return Math.max(1, this.inputText.split('\n').length);
   }
 
-  /** 最大可回滚行数（回滚态指示行开启时，输出区 = rows - inputVisible - 1）。 */
+  /** 最大可回滚行数 = 内容总行数 - 内容区「未滚动」高度（rows - inputVisible）。 */
   private _maxScrollOffset(): number {
-    if (!this.inputActive) return Math.max(0, this.scrollback.length - this.rows);
-    const inputVisible = Math.min(this.inputRows(), this.rows - 1);
-    const contentEnd = Math.max(0, this.rows - inputVisible - 1);
-    return Math.max(0, this.scrollback.length - contentEnd);
+    const content = this.scrollback.length + (this.hasStatus ? 1 : 0);
+    const inputVisible = this.inputActive ? Math.min(this.inputRows(), this.rows) : 0;
+    return Math.max(0, content - (this.rows - inputVisible));
   }
 
-  /** 把输出 + 状态 + 输入（+ 回滚指示）compose 成整屏网格（顶部对齐）。 */
+  /** 把输出 + 状态 + 输入（+ 回滚指示）compose 成整屏网格。
+   *  布局 = chat 流：输入块紧跟内容之后，内容溢出屏幕才贴底（滚动）。 */
   private compose(): CellGrid {
     const grid = new CellGrid(this.rows, this.cols);
 
     const indicatorRows = (this.inputActive && this.scrollOffset > 0) ? 1 : 0;
+    const content = this.hasStatus ? [...this.scrollback, this.status!] : this.scrollback;
 
-    // 1. 输入块：贴底，最多占满全屏（超长输入只显示含光标的底部窗口）
-    let inputBase = this.rows;
+    // 输入块可见行数 + 内容区「未滚动」高度（输入块上方的行数）
+    const inputVisible = this.inputActive ? Math.min(this.inputRows(), Math.max(0, this.rows - indicatorRows)) : 0;
+    const contentBottomWindow = this.rows - inputVisible;
+
+    // 1. 输入块：内容后紧跟，溢出才贴底；超长输入只显示含光标的底部窗口
+    let inputTop = this.rows;
     if (this.inputActive) {
       const lines = this.inputText.split('\n');
       const inRows = Math.max(1, lines.length);
-      const visible = Math.min(inRows, this.rows - indicatorRows);
-      const startLine = inRows - visible;
-      const base = this.rows - visible;
-      inputBase = base;
-      for (let k = 0; k < visible; k++) {
+      const startLine = inRows - inputVisible;
+      inputTop = this.scrollOffset > 0
+        ? this.rows - inputVisible                          // 回滚中：贴底
+        : Math.min(content.length, contentBottomWindow);    // 内容后紧跟，溢出才贴底
+      for (let k = 0; k < inputVisible; k++) {
         const srcLine = startLine + k;
         const text = srcLine === 0 ? this.prompt + (lines[srcLine] ?? '') : (lines[srcLine] ?? '');
-        writeAnsiText(grid, base + k, 0, text);
+        writeAnsiText(grid, inputTop + k, 0, text);
       }
-      this.cursorScreen = { row: base + (this.cursor.line - startLine), col: this.cursor.col };
+      this.cursorScreen = { row: inputTop + (this.cursor.line - startLine), col: this.cursor.col };
     }
 
     // 2. 回滚指示行：输入块上方
     if (indicatorRows) {
-      const indRow = inputBase - 1;
+      const indRow = inputTop - 1;
       if (indRow >= 0) writeAnsiText(grid, indRow, 0, `↑ 已回滚 ${this.scrollOffset} 行 · PgDn 回底`);
     }
 
     // 3. 输出 + 状态行：占据 [0, contentEnd) 行，顶部对齐
-    const contentEnd = inputBase - indicatorRows;
+    const contentEnd = Math.max(0, inputTop - indicatorRows);
     if (contentEnd > 0) {
-      const content = this.hasStatus ? [...this.scrollback, this.status!] : this.scrollback;
       const visible = Math.min(contentEnd, content.length);
-      const start = Math.max(0, content.length - visible - this.scrollOffset);
+      const start = Math.max(0, content.length - contentBottomWindow - this.scrollOffset);
       for (let r = 0; r < visible; r++) {
         const src = start + r;
         if (src >= 0 && src < content.length) writeAnsiText(grid, r, 0, content[src]);
