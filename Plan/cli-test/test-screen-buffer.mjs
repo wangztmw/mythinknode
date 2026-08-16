@@ -1,0 +1,61 @@
+// ScreenBuffer 回归测试（方向 B 第二步：scrollback + viewport + flush）
+// 用法: node Plan/cli-test/test-screen-buffer.mjs（需先 npm run build）
+import { ScreenBuffer } from '../../dist/cli/render/screen-buffer.js';
+
+let PASS = 0, FAIL = 0;
+function assert(name, cond) { if (cond) { PASS++; console.log(`  ✅ ${name}`); } else { FAIL++; console.log(`  ❌ ${name}`); } }
+
+console.log('\n=== ScreenBuffer 回归 ===\n');
+
+// 1. 输出进 scrollback + viewport（内容顶对齐）
+{
+  const sb = new ScreenBuffer(3, 10);
+  sb.writeOutput('aaa\nbbb');
+  const snap = sb.snapshot();
+  assert('内容顶对齐：aaa/bbb/空', snap[0] === 'aaa' && snap[1] === 'bbb' && snap[2] === '');
+}
+
+// 2. 内容超屏：viewport 跟随底部
+{
+  const sb = new ScreenBuffer(3, 10);
+  sb.writeOutput('1\n2\n3\n4\n5');  // 5 行 > 3 行窗口
+  const snap = sb.snapshot();
+  assert('超屏后显示底部 3 行', snap[0] === '3' && snap[1] === '4' && snap[2] === '5');
+}
+
+// 3. scrollBy 回滚
+{
+  const sb = new ScreenBuffer(3, 10);
+  sb.writeOutput('1\n2\n3\n4\n5');
+  sb.scrollBy(2);
+  const snap = sb.snapshot();
+  assert('回滚 2 行后显示 1/2/3', snap[0] === '1' && snap[1] === '2' && snap[2] === '3');
+}
+
+// 4. 回滚后写新输出：不跟随（停在回滚位置）
+{
+  const sb = new ScreenBuffer(3, 10);
+  sb.writeOutput('1\n2\n3\n4\n5');
+  sb.scrollBy(2);
+  sb.writeOutput('6');
+  assert('回滚状态下新输出不打断回滚', !sb.atBottom);
+  const snap = sb.snapshot();
+  assert('回滚状态 viewport 不变', snap[0] === '1' && snap[1] === '2' && snap[2] === '3');
+}
+
+// 5. flush 只在有变化时输出
+{
+  let out = '';
+  const sb = new ScreenBuffer(3, 10, (s) => { out += s; });
+  sb.writeOutput('1\n2\n3');
+  sb.flush();
+  out = '';
+  sb.flush();  // 无变化
+  assert('无变化时 flush 不输出', out === '');
+  sb.writeOutput('4');  // 滚动
+  sb.flush();
+  assert('滚动后 flush 有输出', out.length > 0);
+}
+
+console.log(`\n=== 结果: ${PASS} 通过, ${FAIL} 失败 ===\n`);
+process.exit(FAIL > 0 ? 1 : 0);
