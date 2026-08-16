@@ -37,10 +37,10 @@ function renderProgress(event: ProgressEvent, ss: ScreenState): void {
     switch (event.type) {
       case 'thinking_start': {
         const name = phaseLabel(event.label);
-        const pfx = isFirstThinking ? '' : '\n';
+        const content = `  ● ${B}${name}${b} (0.0s) — ${trunc(event.label, cols - 25)}`;
+        const leadingNewline = !isFirstThinking;
         isFirstThinking = false;
-        ss.emit(`${pfx}  ● ${B}${name}${b} (0.0s) — ${trunc(event.label, cols - 25)}\x1b[K`);
-        ss.markStatus(true);
+        ss.beginStatus(content, leadingNewline);
         break;
       }
       case 'thinking_tick': {

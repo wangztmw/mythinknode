@@ -18,6 +18,7 @@ export class ScreenState {
   private promptWidth: number;
   private _inputRows = 0;
   private _statusActive = false;
+  private _statusLine = '';   // 当前状态行内容，供下次 overwriteStatus 做前缀 diff
 
   constructor(prompt: string) {
     this.prompt = prompt;
@@ -39,7 +40,12 @@ export class ScreenState {
   emit(raw: string): void { process.stdout.write(raw); }
 
   /** 标记活状态行状态。渲染层维护；输入层据此避免 prompt 粘连。 */
-  markStatus(active: boolean): void { this._statusActive = active; }
+  markStatus(active: boolean): void { this._setStatusActive(active); }
+
+  private _setStatusActive(active: boolean): void {
+    this._statusActive = active;
+    if (!active) this._statusLine = '';  // 状态行收尾后，其内容作废
+  }
 
   // ---- 输入块原语 ----
 
@@ -48,7 +54,7 @@ export class ScreenState {
     if (this._statusActive) this.emit('\n');
     this.emit(this.prompt);
     this._inputRows = 1;
-    this._statusActive = false;
+    this._setStatusActive(false);
   }
 
   /** 重绘输入块（逐字节复刻旧 redraw()，含两个 >0 守卫） */
@@ -61,7 +67,7 @@ export class ScreenState {
     out += '\r';
     if (col > 0) out += `\x1b[${col}C`;
     this._inputRows = newRows;
-    this._statusActive = false;
+    this._setStatusActive(false);
     this.emit(out);
   }
 
@@ -75,15 +81,63 @@ export class ScreenState {
   submitInput(): void {
     this.emit('\n');
     this._inputRows = 0;
-    this._statusActive = false;
+    this._setStatusActive(false);
   }
 
   // ---- 输出原语 ----
 
-  /** 覆写活状态行（\r 回行首 + 内容 + \x1b[K 清到行尾，无 \n） */
+  /** 写一条新状态行（thinking_start）。可前置换行。记录内容供后续 diff。 */
+  beginStatus(content: string, leadingNewline: boolean): void {
+    this._statusLine = content;
+    this._setStatusActive(true);
+    this.emit(`${leadingNewline ? '\n' : ''}${content}\x1b[K`);
+  }
+
+  /** 覆写活状态行：与上次内容做前缀 diff，只写变化部分（对标 Ink cell-diff，降写频）。 */
   overwriteStatus(content: string): void {
-    this.emit(`\r${content}\x1b[K`);
-    this._statusActive = true;
+    const prev = this._statusLine;
+    this._statusLine = content;
+    this._setStatusActive(true);
+
+    // 首次写 → 整行写
+    if (prev === '') { this.emit(`\r${content}\x1b[K`); return; }
+
+    // 公共前缀（原始字符；ANSI 码位置稳定）
+    let p = 0;
+    const min = Math.min(prev.length, content.length);
+    while (p < min && prev[p] === content[p]) p++;
+    const prefix = prev.slice(0, p);
+
+    // diff 点落在粗体段内（前缀含未闭合粗体）→ 回退整行写，避免 SGR 错乱
+    if (this._endsInBold(prefix)) { this.emit(`\r${content}\x1b[K`); return; }
+
+    // 新行是旧行延长 → 光标已在末尾，直接写后缀
+    if (p === prev.length) { this.emit(content.slice(p)); return; }
+
+    // 通用 diff：回到前缀列 + 写新后缀 +（变短时）清残留
+    const prefixW = displayWidth(prefix);
+    const prevW = displayWidth(prev);
+    const newW = displayWidth(content);
+    let out = `\r\x1b[${prefixW}C${content.slice(p)}`;
+    if (newW < prevW) out += '\x1b[K';
+    this.emit(out);
+  }
+
+  /** 前缀的粗体是否未闭合（即 diff 点落在 \x1b[1m… 内） */
+  private _endsInBold(prefix: string): boolean {
+    let bold = false;
+    for (let i = 0; i < prefix.length; i++) {
+      if (prefix[i] === '\x1b' && prefix[i + 1] === '[') {
+        const m = /^\x1b\[([0-9;]*)m/.exec(prefix.slice(i));
+        if (m) {
+          const codes = m[1].split(';');
+          if (codes.includes('1')) bold = true;
+          else if (codes.includes('22') || codes.includes('0')) bold = false;
+          i += m[0].length - 1;
+        }
+      }
+    }
+    return bold;
   }
 
   /** 写多行文本：逐行 wrapLine 折行，保证无超长行（治本：超长行会触发 Terminal SwiftUI 布局递归崩溃） */
@@ -95,6 +149,6 @@ export class ScreenState {
         this.emit(row + '\n');
       }
     }
-    this._statusActive = false;
+    this._setStatusActive(false);
   }
 }
