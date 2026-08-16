@@ -57,7 +57,9 @@ export class ScreenState {
 
   // 备用屏（不进鼠标上报）：鼠标上报 \x1b[?1000h 会干扰豆包输入法的组合态
   // （setMarkedText），导致光标移动/删除键异常。滚轮滚动改用 PgUp/PgDn（键盘）。
-  enterAltScreen(): void { this.emit('\x1b[?1049h'); }
+  // \x1b[2J\x1b[H：进入后清空备用屏 + 光标归位。备用屏 buffer 会保留上一次运行的
+  // 残留内容（cell-diff 只写非空格 cell，残留的空格/旧内容会透出来），不清会串屏。
+  enterAltScreen(): void { this.emit('\x1b[?1049h\x1b[2J\x1b[H'); }
   leaveAltScreen(): void { this.emit('\x1b[?1049l'); }
 
   /** 终端尺寸变化：清屏 + 更新网格 + 全量重绘。 */
