@@ -55,10 +55,10 @@ export class ScreenState {
 
   // ---- 终端模式原语（不参与 grid，直接写 stdout） ----
 
-  // 备用屏 + 鼠标滚轮上报（SGR 扩展模式）：滚轮驱动自实现 scrollback。
-  // 注意：鼠标上报会拦截点击，选中文本需按住 Option 拖选（终端通例）。
-  enterAltScreen(): void { this.emit('\x1b[?1049h\x1b[?1000h\x1b[?1006h'); }
-  leaveAltScreen(): void { this.emit('\x1b[?1006l\x1b[?1000l\x1b[?1049l'); }
+  // 备用屏（不进鼠标上报）：鼠标上报 \x1b[?1000h 会干扰豆包输入法的组合态
+  // （setMarkedText），导致光标移动/删除键异常。滚轮滚动改用 PgUp/PgDn（键盘）。
+  enterAltScreen(): void { this.emit('\x1b[?1049h'); }
+  leaveAltScreen(): void { this.emit('\x1b[?1049l'); }
 
   /** 终端尺寸变化：清屏 + 更新网格 + 全量重绘。 */
   onResize(): void {
@@ -139,14 +139,6 @@ export function createAltDriver(ss: ScreenState): InputDriver {
       const page = Math.max(1, ss.rows - 1);
       if (chunk === '\x1b[5~') { ss.scrollBy(page); return true; }   // PgUp 向上
       if (chunk === '\x1b[6~') { ss.scrollBy(-page); return true; }  // PgDn 向下
-      // SGR 鼠标滚轮：\x1b[<b;x;yM（b=64 上滚 / 65 下滚）
-      const wheel = /^\x1b\[<(\d+);\d+;\d+[Mm]/.exec(chunk);
-      if (wheel) {
-        const btn = parseInt(wheel[1], 10);
-        if (btn === 64) ss.scrollBy(page);    // 滚轮上 → 看更早
-        else if (btn === 65) ss.scrollBy(-page);  // 滚轮下 → 看更近
-        return true;  // 鼠标事件（含点击）消费，不进输入模型
-      }
       if (ss.scrolledBack) ss.scrollToBottom();  // 非滚动输入先回底
       return false;
     },
