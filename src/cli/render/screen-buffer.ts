@@ -12,7 +12,7 @@
 import { CellGrid, writeAnsiText } from './cell-grid.js';
 import { diff } from './diff.js';
 import { patchesToANSI } from './emitter.js';
-import { wrapLine } from './term-wrap.js';
+import { wrapLine, displayWidth } from './term-wrap.js';
 
 export class ScreenBuffer {
   rows: number;
@@ -27,6 +27,7 @@ export class ScreenBuffer {
   private cursor = { line: 0, col: 0 }; // 输入光标（相对输入块，line 0 = prompt 行）
   private cursorScreen = { row: 0, col: 0 };  // 光标在整屏的坐标（compose 时算）
   private endRow = 0;                          // 内容结束的下一行（输入块非活跃时，光标停在此）
+  private endCol = 0;                          // 输入块非活跃时光标的列（0=行首，否则落在末尾文字的后面）
   private prevCursorTarget = { row: -1, col: -1 };  // 上次 flush 输出的光标目标（-1 未定位）
   private out: (s: string) => void;
   private viewport: CellGrid;           // 当前帧
@@ -208,6 +209,7 @@ export class ScreenBuffer {
     // 3. 输出 + 状态行：占据 [0, contentEnd) 行，顶部对齐
     const contentEnd = Math.max(0, inputTop - indicatorRows);
     this.endRow = 0;
+    this.endCol = 0;
     if (contentEnd > 0) {
       const visible = Math.min(contentEnd, totalContent);
       const start = Math.max(0, totalContent - contentBottomWindow - this.scrollOffset);
@@ -217,6 +219,13 @@ export class ScreenBuffer {
         writeAnsiText(grid, r, 0, text);
       }
       this.endRow = Math.min(visible, this.rows - 1);  // 内容结束的下一行（0-based，钳到末行）
+      // 光标列：内容贴底/溢出时（末行是内容），光标落在最后一行文字的末尾（跟随文字）；
+      // 否则（内容没占满）落在空行首列。
+      if (this.endRow === visible - 1) {
+        const lastSrc = start + visible - 1;
+        const lastText = lastSrc < this.wrappedLines.length ? this.wrappedLines[lastSrc] : this.status!;
+        this.endCol = displayWidth(lastText);
+      }
     }
 
     return grid;
@@ -232,7 +241,7 @@ export class ScreenBuffer {
     // 或目标变化（提交后视觉无 diff 但光标要移到下一行）。
     const target = this.inputActive
       ? this.cursorScreen
-      : { row: this.endRow, col: 0 };
+      : { row: this.endRow, col: this.endCol };
     const targetChanged = target.row !== this.prevCursorTarget.row || target.col !== this.prevCursorTarget.col;
     if (patches.length > 0 || targetChanged) {
       out += `\x1b[${target.row + 1};${target.col + 1}H`;
