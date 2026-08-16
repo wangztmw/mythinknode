@@ -11,6 +11,7 @@
 import { C, B, b, c } from './render/ansi.js';
 import { ScreenState, createAltDriver } from './render/screen-state.js';
 import { MainScreenState, createMainDriver } from './render/screen-state-main.js';
+import { HybridScreenState, createHybridDriver } from './render/screen-state-hybrid.js';
 import type { ScreenStateLike, InputDriver } from './render/types.js';
 import { createRenderer } from './render/renderer.js';
 import { createInputBuffer } from './input/input-buffer.js';
@@ -18,10 +19,19 @@ import { createInputBuffer } from './input/input-buffer.js';
 export function createCLI() {
   const PROMPT = `${C}${B}mythinknode${b}${c} ${B}>>>${b} `;
   const isITerm2 = process.env.TERM_PROGRAM === 'iTerm.app';
+  // 渲染模式：MYTHINKNODE_MODE 显式覆盖（hybrid|main|alt），否则按终端类型
+  //   iTerm2 → main（原生滚动 + 滚动条，无 nano 崩溃）；其他 → alt（备用屏网格，避开崩溃）
+  const mode = process.env.MYTHINKNODE_MODE ?? (isITerm2 ? 'main' : 'alt');
 
   let ss: ScreenStateLike;
   let driver: InputDriver;
-  if (isITerm2) {
+  if (mode === 'hybrid') {
+    // 混合模式：主屏原生滚动条 + cell-diff 活区 + \n 提交溢出进原生 scrollback（实验）
+    const hybrid = new HybridScreenState(PROMPT);
+    process.stdout.on('resize', () => hybrid.onResize());
+    ss = hybrid;
+    driver = createHybridDriver(hybrid);
+  } else if (mode === 'main') {
     const main = new MainScreenState(PROMPT);
     ss = main;
     driver = createMainDriver(main);
