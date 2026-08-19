@@ -50,7 +50,7 @@ export function shouldWrap(col: number, w: number, cols: number): boolean {
  * 把一行逻辑文本主动折成多个可视行（每行显示宽 ≤ cols），ANSI SGR 跨行保留。
  * 折行点与终端延迟 autowrap 一致（写满 cols 后下一个字符才折）。
  *
- * 用于 ScreenState.writeLines：保证写入终端的每一行都不超过终端宽度，避免超长单行触发
+ * 用于 screen-state 的 writeLines：保证写入终端的每一行都不超过终端宽度，避免超长单行触发
  * Terminal.app SwiftUI 布局递归崩溃（malloc corruption）。
  */
 export function wrapLine(line: string, cols: number): string[] {

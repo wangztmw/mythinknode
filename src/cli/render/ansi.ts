@@ -6,8 +6,7 @@ import { charWidth } from './term-wrap.js';
 
 const C = '\x1b[36m';
 const B = '\x1b[1m';   const b = '\x1b[22m';
-const D = '\x1b[2m';   const d = '\x1b[22m';
-const G = '\x1b[90m';  const c = '\x1b[39m';
+const c = '\x1b[39m';
 
 // CJK 双宽感知的字符串长度（用于表格对齐等）—— 复用 term-wrap 的唯一宽度表
 function visualLen(s: string): number { let w = 0; for (const c of s) w += charWidth(c); return w; }
@@ -47,20 +46,18 @@ export function mdToANSI(text: string): string {
   result = result.replace(/^---$/gm, `${'─'.repeat(60)}`);
   // 引用（不再加灰）
   result = result.replace(/^> (.+)$/gm, `│ $1`);
-  // 安全：确保ANSI码平衡(未闭合的粗体/灰色 → 关闭)
-  let bOpen = 0, dOpen = 0;
-  const re = /\x1b\[(1|22|2)m/g; let m;
+  // 安全：确保ANSI码平衡(未闭合的粗体 → 关闭)
+  let bOpen = 0;
+  const re = /\x1b\[(1|22)m/g; let m;
   while ((m = re.exec(result)) !== null) {
     if (m[1] === '1') bOpen++;
-    else if (m[1] === '22') { bOpen = Math.max(0, bOpen - 1); dOpen = Math.max(0, dOpen - 1); } // 22 同时关闭 bold 和 dim
-    else if (m[1] === '2') dOpen++;
+    else if (m[1] === '22') bOpen = Math.max(0, bOpen - 1); // 22 关闭 bold
   }
   if (bOpen > 0) result += b.repeat(bOpen);
-  if (dOpen > 0) result += d.repeat(dOpen);
   // 去掉残留的未配对*号
   result = result.replace(/^\*{1,2}(?!\*)/gm, '').replace(/(?<!\*)\*{1,2}$/gm, '');
   return result;
 }
 
-/** ANSI 粗体标签（给 CLI 用） */
-export { C, B, b, D, d, G, c };
+/** ANSI 标签（给 CLI 用） */
+export { C, B, b, c };

@@ -108,9 +108,6 @@ export class ScreenBuffer {
     this._render();
   }
 
-  /** 隐藏输入块（提交后）。 */
-  clearInput(): void { this.inputText = ''; this.inputActive = false; this._render(); }
-
   /** 提交输入块进 scrollback（原生屏语义：按回车后输入行留在历史里），然后隐藏输入块。
    *  rawText = 用户原始输入（未折行、未清洗），存原始行以便 resize 时重新折行。
    *  提交后追加一个空行 —— 模拟「回车换行」：输入锚点在屏幕底部按回车时，

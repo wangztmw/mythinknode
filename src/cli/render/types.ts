@@ -3,7 +3,7 @@
  * 公共接口 + 输入驱动（driver）把「模式特有行为」与「通用行编辑器」解耦。
  */
 
-/** 两个渲染模式共有的 ScreenState 方法（input-buffer 用输入子集，renderer 用输出子集）。 */
+/** 两个渲染模式（AltScreenState / MainScreenState）共有的方法（input-buffer 用输入子集，renderer 用输出子集）。 */
 export interface ScreenStateLike {
   cols: number;
   emit(raw: string): void;

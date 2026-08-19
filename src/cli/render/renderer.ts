@@ -1,6 +1,6 @@
 /**
  * 输出渲染器 — 消费 ProgressEvent，把引擎事件渲染成 ANSI。
- * 与输入层（input-buffer）完全解耦；所有终端写入经 ScreenState（单一屏幕模型）。
+ * 与输入层（input-buffer）完全解耦；所有终端写入经 ScreenStateLike（主屏 / 备用屏两模式）。
  */
 import type { ProgressEvent, MergedTool } from '../../agent/progress.js';
 import { mdToANSI, B, b } from './ansi.js';

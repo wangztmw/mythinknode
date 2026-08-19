@@ -1,11 +1,10 @@
 /**
- * ScreenState — 单一屏幕模型（方向 B：二维网格渲染）。
+ * AltScreenState — 备用屏模式（方向 B：二维网格渲染）。
  *
  * 内部驱动 ScreenBuffer（完整内容模型：scrollback + 状态行 + 输入块），
  * 每次变更后 flush() 走 cell-diff 只写变化部分 —— 不再有裸 \r / \x1b[J / 高频 \n 滚动。
  *
- * 保留几何委托（input-geometry 的 contentLines/cursorPos/foldInput）与旧调用方
- * （renderer / input-buffer）的 API，只换「输出到终端」这一层。
+ * 共享骨架（promptWidth / emit / 几何委托）由 ScreenStateBase 提供。
  *
  * 不变量：
  *   I1 输入块永远贴底（ScreenBuffer.compose 里 bottom-aligned，与输出历史无关）。
@@ -13,18 +12,14 @@
  *   I3 单写路径 —— 所有 stdout 写经 emit()（grid flush 的 out 回调 + 终端模式原语共用）。
  */
 import { ScreenBuffer } from './screen-buffer.js';
-import { displayWidth } from './term-wrap.js';
-import { contentLines as geomContentLines, cursorPos as geomCursorPos, foldInput as geomFoldInput } from '../input/input-geometry.js';
+import { ScreenStateBase } from './screen-state-base.js';
 import type { InputDriver } from './types.js';
 
-export class ScreenState {
-  private prompt: string;
-  private promptWidth: number;
+export class AltScreenState extends ScreenStateBase {
   private sb: ScreenBuffer;
 
   constructor(prompt: string, opts?: { rows?: number; cols?: number }) {
-    this.prompt = prompt;
-    this.promptWidth = displayWidth(prompt);
+    super(prompt);
     const rows = opts?.rows ?? process.stdout.rows ?? 24;
     const cols = opts?.cols ?? process.stdout.columns ?? 80;
     this.sb = new ScreenBuffer(rows, cols, (s) => this.emit(s));
@@ -42,16 +37,6 @@ export class ScreenState {
 
   /** 回到底部（新输出跟随滚动）。 */
   scrollToBottom(): void { this.sb.scrollToBottom(); this.sb.flush(); }
-
-  // ---- 几何（委托 input-geometry，逐字节等价） ----
-
-  contentLines(chars: string[]): number { return geomContentLines(chars, this.cols, this.promptWidth); }
-  cursorPos(chars: string[], cursor: number): { line: number; col: number } { return geomCursorPos(chars, cursor, this.cols, this.promptWidth); }
-  foldInput(chars: string[], startCol: number = this.promptWidth): string { return geomFoldInput(chars, this.cols, startCol); }
-
-  // ---- 唯一 stdout 写咽喉（I3） ----
-
-  emit(raw: string): void { process.stdout.write(raw); }
 
   // ---- 终端模式原语（不参与 grid，直接写 stdout） ----
 
@@ -141,7 +126,7 @@ export class ScreenState {
 }
 
 /** 备用屏输入驱动：滚动键（PgUp/PgDn/滚轮）+ grid redraw 追加 + 退出恢复主屏。 */
-export function createAltDriver(ss: ScreenState): InputDriver {
+export function createAltDriver(ss: AltScreenState): InputDriver {
   return {
     consumeChunk(chunk: string): boolean {
       const page = Math.max(1, ss.rows - 1);

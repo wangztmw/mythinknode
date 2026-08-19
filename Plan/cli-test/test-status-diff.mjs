@@ -1,9 +1,9 @@
-// ScreenState 网格渲染回归测试 —— 链接 screen-state 的 grid 集成
+// AltScreenState（备用屏）网格渲染回归测试 —— 链接 screen-state-alt 的 grid 集成
 // 用法: node Plan/cli-test/test-status-diff.mjs（需先 npm run build）
 //
 // 目标：验证 grid 渲染（状态行 diff + 输出 + 输入块）既降写频（字节下降），
 // 又不破坏最终显示（网格终端模拟 + snapshot 往返一致）。
-import { ScreenState } from '../../dist/cli/render/screen-state.js';
+import { AltScreenState } from '../../dist/cli/render/screen-state-alt.js';
 import { CellGrid } from '../../dist/cli/render/cell-grid.js';
 import { charWidth } from '../../dist/cli/render/term-wrap.js';
 
@@ -49,12 +49,12 @@ function gridToRows(grid) {
 
 function capture() {
   let out = '';
-  const ss = new ScreenState('P> ', { rows: ROWS, cols: COLS });
+  const ss = new AltScreenState('P> ', { rows: ROWS, cols: COLS });
   ss.emit = (raw) => { out += raw; };
   return { ss, get out() { return out; } };
 }
 
-console.log('\n=== ScreenState 网格渲染回归 ===\n');
+console.log('\n=== AltScreenState 网格渲染回归 ===\n');
 
 // 1. prompt 贴底
 {

@@ -1,40 +1,29 @@
 /**
- * ScreenState（主屏版）— 原生滚动 + 低写频输入。
+ * MainScreenState（主屏版）— 原生滚动 + 低写频输入。
  *
  * 用于 iTerm2 等不触发 nano 崩溃的终端：输出走原生 \n（滚动条可见可拖、内容进 scrollback），
  * 输入块走 O(1) 追加 echo，状态行心跳前缀 diff —— 避免高频 \x1b[J 全量重绘。
+ *
+ * 共享骨架（promptWidth / emit / 几何委托）由 ScreenStateBase 提供。
  *
  * 不变量：
  *   I2 活状态行不悬挂 —— 写多行输出 / prompt 前先 \n 收尾。
  *   I3 单写路径 —— 所有 stdout 写经 emit()。
  */
 import { displayWidth, wrapLine } from './term-wrap.js';
-import { contentLines as geomContentLines, cursorPos as geomCursorPos, foldInput as geomFoldInput } from '../input/input-geometry.js';
+import { ScreenStateBase } from './screen-state-base.js';
 import type { InputDriver } from './types.js';
 
-export class MainScreenState {
-  private prompt: string;
-  private promptWidth: number;
+export class MainScreenState extends ScreenStateBase {
   private _inputRows = 0;
   private _statusActive = false;
   private _statusLine = '';  // 当前状态行内容，供下次 overwriteStatus 做前缀 diff
 
-  constructor(prompt: string, _opts?: { rows?: number; cols?: number }) {
-    this.prompt = prompt;
-    this.promptWidth = displayWidth(prompt);
+  constructor(prompt: string) {
+    super(prompt);
   }
 
   get cols(): number { return process.stdout.columns || 80; }
-
-  // ---- 几何（委托 input-geometry） ----
-
-  contentLines(chars: string[]): number { return geomContentLines(chars, this.cols, this.promptWidth); }
-  cursorPos(chars: string[], cursor: number): { line: number; col: number } { return geomCursorPos(chars, cursor, this.cols, this.promptWidth); }
-  foldInput(chars: string[], startCol: number = this.promptWidth): string { return geomFoldInput(chars, this.cols, startCol); }
-
-  // ---- 唯一 stdout 写咽喉（I3） ----
-
-  emit(raw: string): void { process.stdout.write(raw); }
 
   // ---- 输入块原语 ----
 

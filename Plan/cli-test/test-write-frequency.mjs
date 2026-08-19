@@ -10,7 +10,7 @@
 //   2. emit 调用次数（写频率）—— 备用屏每 flush 一次写，不逐行写；
 //   3. 总字节数（次要，滚动时备用屏反而更贵：视口上移→整屏重写，如实记录）。
 // 并断言：状态行 tick 只写变化 cell、最终屏内容正确。
-import { ScreenState } from '../../dist/cli/render/screen-state.js';
+import { AltScreenState } from '../../dist/cli/render/screen-state-alt.js';
 import { MainScreenState } from '../../dist/cli/render/screen-state-main.js';
 
 const ROWS = 24, COLS = 80;
@@ -45,14 +45,14 @@ console.log('\n=== 写频回归（备用屏 vs 主屏）===\n');
 
 // ---- 备用屏（原地修改）----
 {
-  const c = capture(ScreenState, { rows: ROWS, cols: COLS });
+  const c = capture(AltScreenState, { rows: ROWS, cols: COLS });
   for (let i = 1; i <= N; i++) runRound(c.ss, i);
   const nl = (c.out.match(/\n/g) || []).length;
 
   assert(`备用屏：全程 0 个字面换行 \\n（滚动爆发被结构性消除）`, nl === 0);
 
   // 状态行 tick：只变秒数一位，diff 只写那一个 cell，字节远小于整行
-  const c2 = capture(ScreenState, { rows: ROWS, cols: COLS });
+  const c2 = capture(AltScreenState, { rows: ROWS, cols: COLS });
   c2.ss.beginStatus(`  ● Thinking (0.0s) — analyzing`, false);
   const before = c2.out.length;
   c2.ss.overwriteStatus(`  ● Thinking (1.0s) — analyzing`);

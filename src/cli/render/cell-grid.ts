@@ -79,10 +79,6 @@ export class CellGrid {
     return c;
   }
 
-  clearRow(row: number): void {
-    for (let c = 0; c < this.cols; c++) this.cells[row][c] = { ch: ' ', style: 0, color: 0 };
-  }
-
   /** 顶部 n 行滚出，下方行上移，底部补空行。 */
   scroll(n: number): void {
     for (let r = 0; r < this.rows - n; r++) this.cells[r] = this.cells[r + n];
