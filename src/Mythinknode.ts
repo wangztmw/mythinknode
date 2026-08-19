@@ -5,23 +5,12 @@
  * Query 循环 (query_loop.ts):  for 轮次 LLM ↔ tool
  */
 
-// ---- 配置 ----
 import { ConfigStore } from './config.js';
-
-// ---- 工具 ----
 import { getAllTools } from './tools/core/index.js';
-
-// ---- LLM ----
 import { resolveLLM } from './llm/resolve.js';
-
-// ---- 引擎 ----
 import { AgentEngine } from './agent/agent_def.js';
-
-// ---- 会话 ----
 import { Session } from './session/session_manage.js';
 import { runSession } from './session_loop.js';
-
-// ---- CLI ----
 import { createCLI } from './cli/cli.js';
 // 不再需要全局 stream monkey-patch。折行保护仅在 renderResult 中通过 safeWrite 显式应用。
 

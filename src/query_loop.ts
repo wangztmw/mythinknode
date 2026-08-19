@@ -54,8 +54,7 @@ async function executeTools(
   serial?: boolean,
   silent?: boolean,
 ): Promise<Array<{ name: string; id: string; input: Record<string, unknown>; output: string }>> {
-  const toolUses = (response.content as any[])
-    .filter((b: any) => b.type === 'tool_use' && b.name && b.id);
+  const toolUses = (response.content as any[]).filter((b: any) => b.type === 'tool_use' && b.name && b.id);
   const toolMap = engine.toolMap;
   const toolContext = engine.toolContext;
   const TOOL_TIMEOUT_MS = 30_000;
