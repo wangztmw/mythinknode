@@ -18,7 +18,7 @@ export const openaiProvider = {
     formatToolResult(toolCallId, output) {
         return { role: 'tool', tool_call_id: toolCallId, content: output };
     },
-    async call(systemPrompt, messages, apiKey, model, tools, openaiBase) {
+    async call(systemPrompt, messages, apiKey, model, tools, openaiBase, maxTokens) {
         const baseUrl = openaiBase || 'https://api.deepseek.com';
         const apiMessages = [{ role: 'system', content: systemPrompt }];
         for (const m of messages) {
@@ -67,7 +67,7 @@ export const openaiProvider = {
             body: JSON.stringify({
                 model,
                 messages: apiMessages,
-                max_tokens: 4096,
+                max_tokens: maxTokens ?? 384000,
                 tools,
                 tool_choice: 'auto',
             }),

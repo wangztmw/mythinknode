@@ -138,6 +138,7 @@ export async function agentLoop(
           preRoundCheck, updateStats, phaseLabel, serialTools, silent, onRound } = params;
   let inputTokens = 0;
   let outputTokens = 0;
+  let totalToolCount = 0;
 
   for (let i = 0; i < maxRounds; i++) {
     if (preRoundCheck) {
@@ -175,7 +176,7 @@ export async function agentLoop(
       }
 
       try {
-        response = await engine.llm.chat(messages, params.systemPrompt || engine.systemPrompt);
+        response = await engine.llm.chat(messages, params.systemPrompt || engine.systemPrompt, 384000);
         if (response.usage) {
           inputTokens += response.usage.input_tokens;
           outputTokens += response.usage.output_tokens;
@@ -200,13 +201,13 @@ export async function agentLoop(
       const hasText = blocks.some(b => b.type === 'text' && (b.text || '').trim().length > 0);
       if (hasText) messages.push({ role: 'assistant', content: response.content });
       const text = extractText(response);
-      const tc = countToolUses(response);
-      onTurnComplete?.(messages, tc);
+      onTurnComplete?.(messages, totalToolCount);
       onComplete?.(text);
       return { status: 'success', text: text || '(done)', roundCount: i + 1, inputTokens, outputTokens };
     }
 
     if (response.stop_reason === 'tool_use') {
+      totalToolCount += countToolUses(response);
       const thoughts = extractThoughts(response);
       if (thoughts && !silent) engine.emit({ type: 'thought', text: thoughts });
       messages.push({ role: 'assistant', content: response.content });

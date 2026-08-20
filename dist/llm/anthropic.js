@@ -18,10 +18,10 @@ export const anthropicProvider = {
             content: [{ type: 'tool_result', tool_use_id: toolCallId, content: output }],
         };
     },
-    async call(systemPrompt, messages, apiKey, model, tools) {
+    async call(systemPrompt, messages, apiKey, model, tools, openaiBase, maxTokens) {
         const body = {
             model,
-            max_tokens: 4096,
+            max_tokens: maxTokens ?? 384000,
             system: systemPrompt,
             messages: messages
                 .filter(m => m.role === 'user' || m.role === 'assistant')

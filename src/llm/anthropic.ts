@@ -25,10 +25,10 @@ export const anthropicProvider: LLMProvider = {
     };
   },
 
-  async call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[]): Promise<LLMResponse> {
+  async call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string, maxTokens?: number): Promise<LLMResponse> {
     const body: Record<string, unknown> = {
       model,
-      max_tokens: 4096,
+      max_tokens: maxTokens ?? 384000,
       system: systemPrompt,
       messages: messages
         .filter(m => m.role === 'user' || m.role === 'assistant')

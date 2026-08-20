@@ -19,7 +19,7 @@ export function createLLMClient(config: {
   const formattedTools = config.provider.formatTools(config.tools);
 
   return {
-    async chat(messages: ChatMessage[], systemPrompt?: string): Promise<LLMResponse> {
+    async chat(messages: ChatMessage[], systemPrompt?: string, maxTokens?: number): Promise<LLMResponse> {
       await limiter.acquire();
       try {
         return await config.provider.call(
@@ -29,6 +29,7 @@ export function createLLMClient(config: {
           config.model,
           formattedTools,
           config.openaiBase,
+          maxTokens,
         );
       } finally {
         limiter.release();

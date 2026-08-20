@@ -64,8 +64,12 @@ async function main() {
     const picked = await Session.pickSession();
     if (picked) {
       session.id = picked.id;
+      session.startedAt = picked.startedAt;
       session.messages = picked.messages;
       session.toolCount = picked.toolCount;
+      session.cumulativeTokens = picked.cumulativeTokens;
+      session.tokenMarkers = picked.tokenMarkers;
+      session.pendingNotifications = picked.pendingNotifications;
     }
   }
 

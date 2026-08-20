@@ -25,7 +25,7 @@ export const openaiProvider: LLMProvider = {
     return { role: 'tool', tool_call_id: toolCallId, content: output } as unknown as ChatMessage;
   },
 
-  async call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string): Promise<LLMResponse> {
+  async call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string, maxTokens?: number): Promise<LLMResponse> {
     const baseUrl = openaiBase || 'https://api.deepseek.com';
     const apiMessages: Array<Record<string, unknown>> = [{ role: 'system', content: systemPrompt }];
 
@@ -72,7 +72,7 @@ export const openaiProvider: LLMProvider = {
       body: JSON.stringify({
         model,
         messages: apiMessages,
-        max_tokens: 4096,
+        max_tokens: maxTokens ?? 384000,
         tools,
         tool_choice: 'auto',
       }),

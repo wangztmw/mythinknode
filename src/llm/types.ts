@@ -17,7 +17,7 @@ export interface LLMResponse {
 
 /** Agent 使用的简洁接口 */
 export interface LLMClient {
-  chat(messages: ChatMessage[], systemPrompt?: string): Promise<LLMResponse>;
+  chat(messages: ChatMessage[], systemPrompt?: string, maxTokens?: number): Promise<LLMResponse>;
   formatToolResult(toolCallId: string, output: string): ChatMessage;
   lastUsage?: { input_tokens: number; output_tokens: number };
 }
@@ -27,5 +27,5 @@ export interface LLMProvider {
   name: string;
   formatTools(tools: Tools): unknown[];
   formatToolResult(toolCallId: string, output: string): ChatMessage;
-  call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string): Promise<LLMResponse>;
+  call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string, maxTokens?: number): Promise<LLMResponse>;
 }

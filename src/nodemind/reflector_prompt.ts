@@ -180,7 +180,7 @@ Rules:
 - [ ] Gotchas section has ≥1 entry (if the session had failures) or ≥0 (if pure success)
 - [ ] Each gotcha answers: symptom, root cause, fix
 - [ ] Attrs are concrete and copy-paste-able; no vague notes as attrs
-- [ ] Content is ≤600 words (if longer, move details to attrs)
+- [ ] Content captures only concepts, procedures, and conclusions — no derivation traces, no filler, no restating what any competent agent already knows (exact values, commands, and code go to attrs)
 
 ---
 
