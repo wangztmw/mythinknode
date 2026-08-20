@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { ChatMessage } from '../llm/types.js';
+import { loadKeywords, saveKeywords } from './session_raw.js';
 
 const SESSIONS_DIR = join(homedir(), '.mythinknode', 'sessions');
 const sessionDir = (id: string) => join(SESSIONS_DIR, id);
@@ -21,6 +22,7 @@ export class Session {
   cumulativeTokens = 0;
   tokenMarkers: number[] = [];
   pendingNotifications: Array<{ role: string; content: string }> = [];
+  keywordIndex: Record<string, string[]> = {};
 
   constructor(id: string, startedAt?: number) {
     this.id = id;
@@ -77,6 +79,7 @@ export class Session {
         s.cumulativeTokens = data.cumulativeTokens || 0;
         s.tokenMarkers = Array.isArray(data.tokenMarkers) ? data.tokenMarkers : [];
         s.pendingNotifications = Array.isArray(data.pendingNotifications) ? data.pendingNotifications : [];
+        s.keywordIndex = loadKeywords(data.id);
         return s;
       }
       return null;
@@ -116,6 +119,7 @@ export class Session {
       s.cumulativeTokens = data.cumulativeTokens || 0;
       s.tokenMarkers = Array.isArray(data.tokenMarkers) ? data.tokenMarkers : [];
       s.pendingNotifications = Array.isArray(data.pendingNotifications) ? data.pendingNotifications : [];
+      s.keywordIndex = loadKeywords(data.id);
       return s;
     } catch { return null; }
   }
@@ -190,5 +194,7 @@ export class Session {
       tokenMarkers: this.tokenMarkers,
       pendingNotifications: this.pendingNotifications,
     }, null, 2));
+    // 关键词索引独立存盘（session.json 字段不动）
+    saveKeywords(this.id, this.keywordIndex);
   }
 }

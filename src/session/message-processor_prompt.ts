@@ -76,6 +76,7 @@ FINDINGS:
 
 FILES: {path1}, {path2}, ...
 NUMBERS: {counts, sizes, times, versions, error codes}
+KEYWORDS: {3-8 个逗号分隔关键词，覆盖本块的主题/文件/错误/决策}
 
 ## Self-Check Before Output:
 - [ ] Every TIMELINE entry has: Tool name + key params → result (or ❌ error)
@@ -84,6 +85,7 @@ NUMBERS: {counts, sizes, times, versions, error codes}
 - [ ] No reasoning/planning noise ("agent decided to...")
 - [ ] All file paths, line numbers, error codes preserved verbatim
 - [ ] Decision pivots explain WHY the change was made
+- [ ] 末尾有 KEYWORDS 行（3-8 个逗号分隔关键词）
 
 ## Example:
 
@@ -106,6 +108,7 @@ FINDINGS:
 
 FILES: src/auth/jwt.ts, src/middleware/auth.ts, src/middleware/routes.ts, src/middleware/admin.ts, package.json
 NUMBERS: 3 files edited, 1 file created, 1 dependency added, jose@5.1, 15min/24h token expiry
+KEYWORDS: JWT认证, jose@5.1, 中间件重构
 
 ---
 
