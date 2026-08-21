@@ -63,7 +63,7 @@ export const openaiProvider: LLMProvider = {
       }
     }
 
-    const r = await fetchWithRetry(`${baseUrl}/v1/chat/completions`, {
+    const { status, ok, text } = await fetchWithRetry(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -77,12 +77,12 @@ export const openaiProvider: LLMProvider = {
         tool_choice: 'auto',
       }),
     });
-    if (!r.ok) throw new Error(`API ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    if (!ok) throw new Error(`API ${status}: ${text.slice(0, 200)}`);
     let d: Record<string, unknown>;
     try {
-      d = await r.json() as Record<string, unknown>;
+      d = JSON.parse(text) as Record<string, unknown>;
     } catch (e) {
-      throw new Error(`Unterminated string in JSON: ${(e as Error).message}`.slice(0, 200));
+      throw new Error(`Invalid JSON from API: ${(e as Error).message}`.slice(0, 200));
     }
     const choice = (d.choices as Array<Record<string, unknown>>)?.[0];
     const msg = choice?.message as Record<string, unknown> | undefined;

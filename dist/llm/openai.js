@@ -58,7 +58,7 @@ export const openaiProvider = {
                 });
             }
         }
-        const r = await fetchWithRetry(`${baseUrl}/v1/chat/completions`, {
+        const { status, ok, text } = await fetchWithRetry(`${baseUrl}/v1/chat/completions`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -72,14 +72,14 @@ export const openaiProvider = {
                 tool_choice: 'auto',
             }),
         });
-        if (!r.ok)
-            throw new Error(`API ${r.status}: ${(await r.text()).slice(0, 200)}`);
+        if (!ok)
+            throw new Error(`API ${status}: ${text.slice(0, 200)}`);
         let d;
         try {
-            d = await r.json();
+            d = JSON.parse(text);
         }
         catch (e) {
-            throw new Error(`Unterminated string in JSON: ${e.message}`.slice(0, 200));
+            throw new Error(`Invalid JSON from API: ${e.message}`.slice(0, 200));
         }
         const choice = d.choices?.[0];
         const msg = choice?.message;

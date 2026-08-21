@@ -28,7 +28,7 @@ export const anthropicProvider = {
                 .map(m => ({ role: m.role, content: m.content })),
             tools,
         };
-        const r = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
+        const { status, ok, text } = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -37,9 +37,15 @@ export const anthropicProvider = {
             },
             body: JSON.stringify(body),
         });
-        if (!r.ok)
-            throw new Error(`API ${r.status}: ${(await r.text()).slice(0, 200)}`);
-        const d = await r.json();
+        if (!ok)
+            throw new Error(`API ${status}: ${text.slice(0, 200)}`);
+        let d;
+        try {
+            d = JSON.parse(text);
+        }
+        catch (e) {
+            throw new Error(`Invalid JSON from API: ${e.message}`.slice(0, 200));
+        }
         return {
             content: d.content || [],
             stop_reason: d.stop_reason || '',

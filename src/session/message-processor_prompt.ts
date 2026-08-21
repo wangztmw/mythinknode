@@ -60,7 +60,7 @@ Don't just state what changed — say why.
 
 ## Format:
 
-[S${n}] GOAL: {one sentence — what was being accomplished}
+GOAL: {one sentence — what was being accomplished}
 
 TIMELINE:
 • {Tool}: {key params} → {result}
@@ -89,7 +89,7 @@ KEYWORDS: {3-8 个逗号分隔关键词，覆盖本块的主题/文件/错误/�
 
 ## Example:
 
-[S3] GOAL: Add JWT authentication to API endpoints
+GOAL: Add JWT authentication to API endpoints
 
 TIMELINE:
 • Read: src/auth.ts → 142 lines, uses old session-based auth

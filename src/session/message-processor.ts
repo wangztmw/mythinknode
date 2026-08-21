@@ -50,11 +50,20 @@ export class MessageProcessor {
       const text = (r.content as Array<{ type: string; text?: string }>)
         .filter(b => b.type === 'text').map(b => b.text || '').join('\n').trim();
       const { summary, keywords } = splitKeywords(text);
-      // 保留最终 assistant 回复 + 压缩摘要
+      // 保留最终 assistant 回复的纯文本 + 压缩摘要。
+      // 注意：tool_use 块必须连同其 tool 结果一起丢弃，否则会留下"有 tool_calls 无 tool 消息"
+      // 的非法消息数组 → DeepSeek 400 (insufficient tool messages following tool_calls)。
       const finalAssistant = delta.filter(m => m.role === 'assistant').pop();
       const compressed: ChatMessage[] = [];
       if (summary) compressed.push({ role: 'user', content: `[${tag}] ${summary}` });
-      if (finalAssistant) compressed.push(finalAssistant);
+      if (finalAssistant) {
+        if (typeof finalAssistant.content === 'string') {
+          compressed.push(finalAssistant);
+        } else {
+          const textOnly = (finalAssistant.content as any[]).filter((b: any) => b.type === 'text');
+          if (textOnly.length > 0) compressed.push({ role: 'assistant', content: textOnly });
+        }
+      }
       return { tag, compressed, keywords };
     } catch {
       return null; // 压缩失败，保留原文

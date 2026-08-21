@@ -21,7 +21,8 @@ globalThis.fetch = async (_url, init) => {
   return {
     ok: true,
     status: 200,
-    json: async () => ({
+    // fetchWithRetry 现在在重试循环内读 .text()（截断纳入重试），mock 需提供 text
+    text: async () => JSON.stringify({
       choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 1, completion_tokens: 1 },
     }),
