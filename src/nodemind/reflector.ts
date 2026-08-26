@@ -12,6 +12,93 @@ import type { ChatMessage, LLMClient } from '../llm/types.js';
 import type { LoopResult } from '../query_loop.js';
 import { buildReflectPrompt } from './reflector_prompt.js';
 
+// ---- 容错 JSON 解析（LLM 输出常被 max_tokens 截断，需修复未闭合字符串/括号） ----
+
+/** 引号感知地提取第一个完整闭合的 { ... } 块 */
+function extractJsonBlock(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0, inString = false, escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+/** 修复被截断的 JSON：闭合未结束的字符串，补齐缺失的 } 和 ] */
+function closeTruncatedJson(s: string): string {
+  let out = '';
+  let inString = false, escaped = false;
+  let brace = 0, bracket = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    out += c;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === '{') brace++;
+    else if (c === '}') brace--;
+    else if (c === '[') bracket++;
+    else if (c === ']') bracket--;
+  }
+  if (inString) out += '"';
+  while (bracket-- > 0) out += ']';
+  while (brace-- > 0) out += '}';
+  return out;
+}
+
+/** 截掉末尾未完成的键值对（值写到一半就被截断的场景），作为二次兜底 */
+function cutIncompleteTail(s: string): string | null {
+  let inString = false, escaped = false;
+  let lastComma = -1;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === ',') lastComma = i;
+  }
+  if (lastComma < 0) return null;
+  return s.slice(0, lastComma);
+}
+
+/** 分层尝试解析：完整块 → 截断修复 → 二次兜底。全失败返回 null */
+function parseReflectorJson(text: string): any | null {
+  const block = extractJsonBlock(text);
+  if (block) {
+    try { return JSON.parse(block); } catch { /* fall through */ }
+  }
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  const candidate = text.slice(start);
+  const closed = closeTruncatedJson(candidate);
+  if (closed) {
+    try { return JSON.parse(closed); } catch { /* fall through */ }
+    const cut = cutIncompleteTail(candidate);
+    if (cut) {
+      const closed2 = closeTruncatedJson(cut);
+      if (closed2) {
+        try { return JSON.parse(closed2); } catch { /* give up */ }
+      }
+    }
+  }
+  return null;
+}
+
 // ---- 工具调用链提取（逐段读原始 messages，保留完整过程） ----
 
 function extractToolLog(messages: ChatMessage[]): string {
@@ -138,16 +225,15 @@ export class NodeMindReflector {
         outcome: loopResult.status,
         rounds: loopResult.roundCount,
       });
-      const response = await llm.chat([{ role: 'user', content: prompt }]);
+      const response = await llm.chat([{ role: 'user', content: prompt }], undefined, 384000);
       const text = (response.content as Array<{ type: string; text?: string }>)
         .filter(b => b.type === 'text')
         .map(b => b.text || '')
         .join(' ')
         .trim();
 
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) return;
-      decision = JSON.parse(jsonMatch[0]);
+      decision = parseReflectorJson(text);
+      if (!decision) return;
     } catch (e) {
       console.error('[NodeMind] Reflector LLM call failed:', (e as Error).message);
       return;
@@ -158,6 +244,8 @@ export class NodeMindReflector {
     try {
       const nodeId = decision.title
         .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+      // title 全中文/全符号时 slug 后为空 → 无合法 id,直接跳过(与 attr 同一根因)
+      if (!nodeId) return;
 
       // 确定父节点
       let parentId = decision.parentNode || 'root';
@@ -169,8 +257,11 @@ export class NodeMindReflector {
         for (const a of decision.attrs) {
           if (!a.title || !a.fields || Object.keys(a.fields).length === 0) continue;
           const type = ['code', 'command', 'config', 'note'].includes(a.type) ? a.type : 'note';
+          // title 全中文/全符号时 slug 后为空 → 直接丢弃，避免 store 校验报 "attr '?' missing"
+          const attrId = a.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+          if (!attrId) continue;
           attrs.push({
-            id: a.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40),
+            id: attrId,
             title: a.title,
             type,
             content: a.content || '',

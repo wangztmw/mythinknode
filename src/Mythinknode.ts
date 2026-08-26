@@ -5,23 +5,12 @@
  * Query 循环 (query_loop.ts):  for 轮次 LLM ↔ tool
  */
 
-// ---- 配置 ----
-import { ConfigStore } from './cli/config.js';
-
-// ---- 工具 ----
+import { ConfigStore } from './config.js';
 import { getAllTools } from './tools/core/index.js';
-
-// ---- LLM ----
 import { resolveLLM } from './llm/resolve.js';
-
-// ---- 引擎 ----
 import { AgentEngine } from './agent/agent_def.js';
-
-// ---- 会话 ----
 import { Session } from './session/session_manage.js';
 import { runSession } from './session_loop.js';
-
-// ---- CLI ----
 import { createCLI } from './cli/cli.js';
 // 不再需要全局 stream monkey-patch。折行保护仅在 renderResult 中通过 safeWrite 显式应用。
 
@@ -71,24 +60,45 @@ async function main() {
   });
   setSearchLLM(searchLLM);
 
+  // infermem ingest 专用 LLM:抽取+语义判断用便宜/快模型(决策 #5),不挤主循环的 max=2。
+  // 关键:不能用 deepseek-v4-pro(推理模型)——思考阶段超长,会卡在 fetchWithRetry 的 120s 单请求超时。
+  const { setInfermemLLM } = await import('./infermem/ingest.js');
+  const ingestLLM = resolveLLM({
+    provider: config.provider,
+    apiKey: config.apiKey,
+    model: 'deepseek-v4-flash',   // 快模型:抽取 + 语义判断
+    openaiBase: config.openaiBase,
+    tools: [],  // 抽取不需要工具
+    systemPrompt: '',
+    maxConcurrency: 4,     // 与 ingest 的 INGEST_CONCURRENCY 对齐
+  });
+  setInfermemLLM(ingestLLM);
+
   if (shouldResume) {
     const picked = await Session.pickSession();
     if (picked) {
       session.id = picked.id;
+      session.startedAt = picked.startedAt;
       session.messages = picked.messages;
       session.toolCount = picked.toolCount;
+      session.cumulativeTokens = picked.cumulativeTokens;
+      session.tokenMarkers = picked.tokenMarkers;
+      session.pendingNotifications = picked.pendingNotifications;
     }
   }
 
   session.lock();
 
-  console.log(`mythinknode v0.6.0`);
-  console.log(`Provider: ${config.provider}  |  Model: ${config.model}  |  Tools: ${tools.length}`);
-  console.log(`Config: ~/.mythinknode/config.json  |  Memory: ~/.mythinknode/MYTHINKNODE.md`);
-  console.log('Type /help for commands, /exit to quit\n');
-
   // Session 循环
   const cli = createCLI();
+
+  // banner 进备用屏 grid（console.log 会写到被隐藏的主屏）
+  cli.writeLines(
+    `mythinknode v0.6.0\n` +
+    `Provider: ${config.provider}  |  Model: ${config.model}  |  Tools: ${tools.length}\n` +
+    `Config: ~/.mythinknode/config.json  |  Memory: ~/.mythinknode/MYTHINKNODE.md\n` +
+    `Type /help for commands, /exit to quit\n`
+  );
 
   while (true) {
     const line = await cli.readLine();
@@ -108,15 +118,21 @@ async function main() {
 
     cli.setBusy(true);
     const stopRender = cli.startRender(engine);
+    let result: Awaited<ReturnType<typeof runSession>>;
     try {
-      const result = await runSession(engine, session, line);
-      cli.renderResult(result.text, result.ms, result.inputTokens, result.outputTokens);
+      result = await runSession(engine, session, line);
     } catch (e) {
-      cli.renderError((e as Error).message || String(e));
-    } finally {
       stopRender();
       cli.setBusy(false);
+      cli.renderError((e as Error).message || String(e));
+      session.save();
+      continue;
     }
+    // 先停渲染，再输出结果。推式事件下 runSession resolve 后不会再有 emit，
+    // stopRender 只是安全网：刷掉最后的 pendingTick + 退订，保证结果渲染与进度事件原子。
+    stopRender();
+    cli.renderResult(result.text, result.ms, result.inputTokens, result.outputTokens);
+    cli.setBusy(false);
     session.save();
   }
 }

@@ -1,27 +1,21 @@
 # mythinknode
 
-一个极简 AI 编码 Agent。
+一个从 Claude Code 源码精简重构而来的**极简 AI 编码 Agent**。单进程、统一循环、信号式多 Agent 集群，加上一个跨会话的树状经验知识图（NodeMind）。
 
-当前各种 Agent 的最简框架，可以归结为一句话：
+**~8,100 行 TypeScript · 16 个工具 · 零运行时依赖（除 zod）· 零遥测 · 研究级可读性。**
 
 ```
-session_loop × query_loop（LLM × tool）
+npm i -g @wangzt_mw/mythinknode
+mtn
 ```
-
-`session_loop` 管一条会话的完整管线（前置检索 → 执行 → 反思 → 压缩），`query_loop` 管单轮 LLM ↔ tool 循环。二者叠加，就是 Agent 的全部骨架。
-
-**~4,300 行 TypeScript · 13 个工具 · 零运行时依赖（除 zod）· 零遥测。**
 
 ---
 
 ## 为什么会有这个项目
 
-为了探索**智能组件**的可能性。具体两条线：
+Claude Code 是 50 万行的庞然大物：遥测、成本追踪、企业级云功能、多产品线耦合。这个项目把它剥到只剩骨架，证明一件事——**一个能用的编码 Agent 不需要那么复杂**。
 
-- **智能搜索算法** —— 让大模型根据标签（keywords）与树结构实现高效搜索。不是把答案向量化整块喂给模型，而是让它沿着标签和树的分支自己找到路。
-- **智能管理** —— 让大模型区分知识的内在结构，并通过人机协同构建知识体系。Agent 在循环中打标签，模型在会话后反思落盘，知识树在人机协同中生长。
-
-这两条线共同落在 NodeMind 上——下面是它和其余几个设计点，按价值排序。
+重构过程中没有删到"能跑"就停，而是在三条主线上做了独立的、可复用的创新。下面按价值排序。
 
 ---
 
@@ -45,38 +39,43 @@ session_loop × query_loop（LLM × tool）
         └── session-20240809/  ← 每轮 session 自动沉淀的经验节点
 ```
 
-三个反直觉的设计，正好对应上面两条线：
+三个反直觉的设计：
 
-**智能搜索算法**
-- **单层搜索 + Agent 驱动深入**：搜索**只查一层**，返回 `{ matches, deeperIds, deeperHints }`。深入的权利交给 Agent 自己——它用 `Knowledge(read)` 逐节点加载，觉得不够再往下走。不是系统"推"信息，是 Agent"拉"信息。比递归多轮 LLM 路由快一个数量级，且不会一次性灌入海量文档。
-
-**智能管理（逻辑树保持）**
 - **分层导航，信息散布**：父节点只存 `keywords[]`（"我跟什么有关"），不存正文。LLM 必须沿路径走——读根节点 → 决定深入哪个分支 → 读子节点 → 继续或停止。上下文永远可控。
-- **Remember 标记、Reflector 落盘（人机协同）**：Agent 循环中随时用 `Remember(action='tag')` 打 `[REMEMBER_TAG]` 标记（只入队列，不写树）；session 结束后由 **Reflector 作为树的唯一写入入口**，用 LLM 分析完整工具日志，决定"创建/更新/跳过"。写入权集中，树结构永不腐坏。
+- **单层搜索 + Agent 驱动深入**：搜索**只查一层**，返回 `{ matches, deeperIds, deeperHints }`。深入的权利交给 Agent 自己——它用 `Knowledge(read)` 逐节点加载，觉得不够再往下走。不是系统"推"信息，是 Agent"拉"信息。这比递归多轮 LLM 路由快一个数量级，且不会一次性灌入海量文档。
+- **Remember 标记、Reflector 落盘**：Agent 循环中随时用 `Remember(action='tag')` 打 `[REMEMBER_TAG]` 标记（只入队列，不写树）；session 结束后由 **Reflector 作为树的唯一写入入口**，用 LLM 分析完整工具日志，决定"创建/更新/跳过"。写入权集中，树结构永不腐坏。
 
 **失败比成功更有价值**：反思提示词明确要求记录失败路线——"试了 X 失败，Y 也失败，Z 成功"比"Z 成功"有用十倍。每个 gotcha 按 **Symptom → Root Cause → Fix** 三段式落盘。
 
-### 2. 上下文独立的 Agent 调度 —— 用好有限的上下文窗口
+### 2. 统一 Agent 循环 —— 一份代码驱动主 Agent 和子 Agent
 
-主 Agent 和子 Agent 的区别在于**上下文独立**。上下文窗口是有限的——当主 Agent 的 message（会话、知识、信息）累积过多、窗口吃紧时，把子任务调度给子 Agent，让子 Agent 在自己的独立上下文里跑，跑完只回传结论。
+主 Agent 和子 Agent 在 Claude Code 里是两套不同的循环。这里合并成一份 `agentLoop()`（`src/query_loop.ts`，~220 行）。
 
-这样把有限的上下文窗口用在刀刃上：主 Agent 只保留"任务 + 结论"，过程留在子 Agent 的独立上下文里。
+区别**全在 `AgentLoopParams` 配置里**——主 Agent 25 轮、子 Agent 10 轮；子 Agent 有 `serialTools`、有自己的 system prompt、有 `preRoundCheck` 拦截 kill/redirect 信号。同一份代码走 LLM 调用、工具执行、进度事件、token 统计。
 
-协调是**信号制**，不是内容制：
+> 这意味着**修一个 bug，主 Agent 和所有子 Agent 一起修好**。没有双份代码漂移。
+
+### 3. 信号式多 Agent 集群 —— 不污染上下文窗口
+
+传统多 Agent 靠把每个子 Agent 的完整输出塞回主上下文来协调。这里是**信号制**：
 
 - 子 Agent 用 `[NEED: ...]`、`[FOUND: ...]` 标记主动向主 Agent 通信，而不是被动等召唤。
 - 主 Agent 用 `Agent(action='wait_any')` 等"任意一个完成"，`Agent(action='check')` 拉报告，`Agent(action='direct')` 注入新指令，`Agent(action='kill')` 掐掉失控的。
 - 后台 Agent 完成后只往通知队列塞一条**一句话信号**，主 Agent 需要时才去读完整报告。
 
-### 3. Delta 上下文压缩 —— 只记录模型无法自己推导的东西
+协调信息是**信号**，不是**内容**。上下文窗口只装结论，不装过程。
+
+### 4. Delta 上下文压缩 —— 只记录模型无法自己推导的东西
 
 每个 session 结束后，`MessageProcessor` 用 LLM 把本轮消息压缩成五段式摘要（`GOAL → TIMELINE → FINDINGS → FILES → NUMBERS`），原文存盘（`raws/S{n}.json`），精简版追加到上下文。
+
+压缩原则来自 Skill Building 方法论：
 
 - **Delta 原则**：只记模型自己推不出来的。砍掉推理噪音、原始 HTML/JSON、重复搜索结果、样板话术。
 - **失败是高价值**：每个错误记录"试了什么 → 精确报错 → 下一步换什么"。
 - **过程优于声明**：记"Write: src/auth/jwt.ts → 创建了 JWT helper"，不记"Agent 决定加认证"。
 
-### 4. CJK 双宽感知的终端渲染 —— 治本，不是打补丁
+### 5. CJK 双宽感知的终端渲染 —— 治本，不是打补丁
 
 中文/日文/韩文在终端占 2 列，ASCII 占 1 列。大多数 CLI 工具按"每个字符 1 列"算宽度，导致中文输出一缩窗口就复制乱码。
 
@@ -88,15 +87,39 @@ session_loop × query_loop（LLM × tool）
 
 > 这个 bug 折腾了 7 次失败的尝试，最终根因是 **ANSI 转义序列被物理截断跨行边界**导致状态机损坏。修复方式不是事后 patch，而是从渲染源头重构。
 
-### 5. LLM 网络可靠性 —— 生产级重试策略
+### 6. LLM 网络可靠性 —— 生产级重试策略
 
 `src/llm/retry.ts` 实现了生产级的重试策略：
 
 - **瞬态错误重试 10 次**，永久错误（DNS/鉴权）立即失败并给明确提示。
-- **指数退避 + 25% jitter**（防惊群），优先读 `retry-after` 响应头。
+- **指数退避 + 25% jitter**（防惊群），优先读 `retry-after` 响应头（服务器最清楚该等多久）。
 - **ECONNRESET → 下次请求禁用 keep-alive**（避免复用死连接）。
 - **529 / overloaded 识别**（服务过载，值得重试）。
 - **并发信号量**：主 Agent + 所有子 Agent 共享一个计数器（默认 2），超出排队 FIFO，120s 超时兜底——防止多 Agent 同时轰炸 API 触发 429。
+
+### 7. InferMem —— 跨书知识 DAG（把 markdown 编译成图）
+
+NodeMind 记的是**经验**（怎么做事），InferMem 记的是**知识**（书/文档里的东西）。`src/infermem/` 是一个批量知识图编译器：把 markdown 文档切成块，抽取知识原子（`concept/definition/theorem/formula/table/case`），再语义消解成一张全局 DAG。
+
+关键设计：
+
+- **跨书合并**：不同书里的同一个概念靠 `identityKey = kind:scope路径:规范名` 合并成同一个节点；但 `case`（案例）附内容哈希**永不合并**——不同案例必须并存。
+- **原文不嵌进图**：原子只存 `{docId, segIndex, offset}` 指针，原文存 `sources/<docId>/content.json` 数组，反幻觉门要求每条边都有原文证据。
+- **隐式边推断**：除了显式抽取的关系，`link.ts` 还会推断 `derives/uses/generalizes` 等隐含依赖，标 `source='inferred'`。
+- **便宜模型干重活**：抽取 + 语义判断用快模型（`deepseek-v4-flash`）批量并发，主模型只做抽样验证。ingest 是后台任务（返回 jobId、防重入、逐块增量落盘）。
+
+工具：`Infer(path)` 摄入一本书，`InferQuery(status/query/read/walk/merge)` 查询、读邻居、走依赖锥、显式融合两棵树。存储：`~/.mythinknode/infermem/`。
+
+### 8. TraitGraph —— 会话级「思维-执行」轨迹图
+
+NodeMind 存**沉淀后的结论**，TraitGraph 存**本次会话里模型怎么一步步想、怎么试错、哪里折返**的过程。这是对"记录大模型如何思考和执行"的一次直接尝试。
+
+- **节点 = 思维状态**：`goal`（任务目标）+ `plan`（怎么达成）+ `direction`（打算尝试的方向）。
+- **边 = 一次尝试**：`action`（做了什么）+ `result`（得到什么结果）+ `outcome`（成败）。
+- **折返**：走不通就 `backtrack`，把这条边标 `dead`，frontier 回退到上一个节点，换个方向再试。
+- **模型显式写**：`goal/plan/direction` 是模型的内部状态，只有模型能精确表述——所以由模型用 `TraitGraph(plan/step/backtrack)` 显式记录，而不是事后自动抽取的二手猜测。
+
+存储与会话原文 `raws/` 平级：`~/.mythinknode/sessions/{id}/traitraw/T{n}.json`，用 `T{n}` 标记索引（对齐 `S{n}` 索引 raws 的机制），Session Memory 能像召回 `S{n}` 块一样召回 `T{n}` 节点注入背景。
 
 ---
 
@@ -105,8 +128,8 @@ session_loop × query_loop（LLM × tool）
 ```
 src/
 ├── Mythinknode.ts          入口：配置 → LLM → 工具 → 引擎 → REPL
-├── session_loop.ts         Session 循环：前置检索 → query_loop → 反思 → 压缩
-├── query_loop.ts           单轮 LLM ↔ tool 循环
+├── session_loop.ts         Session 循环：前置检索 → agentLoop → 反思 → 压缩
+├── query_loop.ts           统一 Agent 循环（主/子 Agent 共用）
 ├── agent/
 │   └── agent_def.ts        引擎：系统提示词 + Agent 状态表 + 子 Agent 提示词
 ├── cli/
@@ -117,26 +140,80 @@ src/
 ├── llm/                    双 Provider（Anthropic + OpenAI/DeepSeek）+ 重试 + 并发
 ├── session/                会话持久化 + 消息压缩（MessageProcessor）
 ├── nodemind/               树状经验图：Store / Navigator / Reflector
-└── tools/                  13 个工具
+├── infermem/               跨书知识 DAG：chunker / extractor / resolve / link / store
+├── traitgraph/             会话级思维-执行轨迹图：schema / store / recall / format
+└── tools/                  16 个工具
     ├── core/               Tool 接口 + buildTool 工厂
     ├── agent/              Agent（spawn/check/wait_any/direct/kill）
     ├── file/               Read / Write / Edit / Glob / Grep
     ├── exec/               Bash
     ├── search/             WebSearch（Tavily）/ WebFetch
     ├── external/           MCP / Skill
-    └── nodemind/           Knowledge（search/read/browse）/ Remember（tag）
+    ├── nodemind/           Knowledge（search/read/browse）/ Remember（tag）
+    ├── infermem/           Infer（构建 DAG）/ InferQuery（查询/走锥/融合）
+    └── traitgraph/         TraitGraph（plan/step/backtrack/status/read）
 ```
 
 **一次 Session 的完整管线**：
 
 ```
-CLI 输入 → Session 管理 → NodeMind 前置检索 → query_loop（LLM + 工具）
+CLI 输入 → Session 管理 → NodeMind 前置检索 → traitGraph 召回 → Agent 循环（LLM + 工具）
     → NodeMind 后置反思 → MessageProcessor 压缩 → CLI 渲染 → 持久化
 ```
 
-7 个模块各守一段管线，通过 `session_loop.ts` 串联。模块内部自由，模块间只有一种耦合：**数据进、数据出**。
+9 个模块各守一段管线，通过 `session_loop.ts` 串联。模块内部自由，模块间只有一种耦合：**数据进、数据出**。
 
 ---
+
+## 快速开始
+
+```bash
+# 安装
+npm i -g @wangzt_mw/mythinknode
+
+# 设置 API key（DeepSeek / OpenAI / Anthropic）
+export MYTHINKNODE_API_KEY=sk-...        # sk- 开头自动识别 OpenAI/DeepSeek
+export MYTHINKNODE_API_KEY=sk-ant-...    # sk-ant- 开头自动识别 Anthropic
+
+# 启动
+mtn                                        # 或: mythinknode
+```
+
+### 配置
+
+可选的 `~/.mythinknode/config.json`（首次运行自动创建）：
+
+```json
+{
+  "model": "deepseek-chat",
+  "provider": "openai",
+  "openaiBase": "https://api.deepseek.com",
+  "tavilyApiKey": "tvly-..." 
+}
+```
+
+用户记忆：写入 `~/.mythinknode/MYTHINKNODE.md`，每次 session 自动注入。
+
+### 命令
+
+| 输入 | 作用 |
+|------|------|
+| `/help` | 列出工具 |
+| `/exit` / `/quit` | 退出（自动保存 + 生成会话标题） |
+| `--resume` | 恢复上次会话 |
+| 其他 | 发给 AI |
+
+---
+
+## 开发
+
+```bash
+git clone https://github.com/wangztmw/mythinknode.git
+cd mythinknode
+npm install
+npm run build        # tsc 编译到 dist/
+npm run dev          # tsx 直接跑源码
+```
 
 ## License
 

@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { ChatMessage } from '../llm/types.js';
+import { loadKeywords, saveKeywords } from './session_raw.js';
 
 const SESSIONS_DIR = join(homedir(), '.mythinknode', 'sessions');
 const sessionDir = (id: string) => join(SESSIONS_DIR, id);
@@ -15,14 +16,17 @@ const LOCK_FILE = join(SESSIONS_DIR, '.lock');
 
 export class Session {
   id: string;
+  startedAt: number;
   messages: ChatMessage[] = [];
   toolCount = 0;
   cumulativeTokens = 0;
   tokenMarkers: number[] = [];
   pendingNotifications: Array<{ role: string; content: string }> = [];
+  keywordIndex: Record<string, string[]> = {};
 
-  constructor(id: string) {
+  constructor(id: string, startedAt?: number) {
     this.id = id;
+    this.startedAt = startedAt ?? Date.now();
   }
 
   /** 添加消息到对话历史 */
@@ -45,7 +49,7 @@ export class Session {
   /** 标记会话开始（创建锁文件） */
   lock(): void {
     if (!existsSync(SESSIONS_DIR)) mkdirSync(SESSIONS_DIR, { recursive: true });
-    writeFileSync(LOCK_FILE, JSON.stringify({ id: this.id, startedAt: Date.now() }));
+    writeFileSync(LOCK_FILE, JSON.stringify({ id: this.id, startedAt: this.startedAt }));
   }
 
   /** 解除会话锁 */
@@ -69,9 +73,13 @@ export class Session {
       const path = sessionPath(lock.id);
       if (existsSync(path)) {
         const data = JSON.parse(readFileSync(path, 'utf-8'));
-        const s = new Session(data.id);
+        const s = new Session(data.id, data.startedAt);
         s.messages = (data.messages as ChatMessage[]).filter(m => !(m.role === 'assistant' && Array.isArray(m.content) && m.content.length === 0));
         s.toolCount = data.toolCount || 0;
+        s.cumulativeTokens = data.cumulativeTokens || 0;
+        s.tokenMarkers = Array.isArray(data.tokenMarkers) ? data.tokenMarkers : [];
+        s.pendingNotifications = Array.isArray(data.pendingNotifications) ? data.pendingNotifications : [];
+        s.keywordIndex = loadKeywords(data.id);
         return s;
       }
       return null;
@@ -105,9 +113,13 @@ export class Session {
       const path = sessionPath(id);
       if (!existsSync(path)) return null;
       const data = JSON.parse(readFileSync(path, 'utf-8'));
-      const s = new Session(data.id);
+      const s = new Session(data.id, data.startedAt);
       s.messages = (data.messages as ChatMessage[]).filter(m => !(m.role === 'assistant' && Array.isArray(m.content) && m.content.length === 0));
       s.toolCount = data.toolCount || 0;
+      s.cumulativeTokens = data.cumulativeTokens || 0;
+      s.tokenMarkers = Array.isArray(data.tokenMarkers) ? data.tokenMarkers : [];
+      s.pendingNotifications = Array.isArray(data.pendingNotifications) ? data.pendingNotifications : [];
+      s.keywordIndex = loadKeywords(data.id);
       return s;
     } catch { return null; }
   }
@@ -175,9 +187,14 @@ export class Session {
     mkdirSync(sessionDir(this.id), { recursive: true });
     writeFileSync(sessionPath(this.id), JSON.stringify({
       id: this.id,
-      startedAt: Date.now(),
+      startedAt: this.startedAt,
       messages: this.messages,
       toolCount: this.toolCount,
+      cumulativeTokens: this.cumulativeTokens,
+      tokenMarkers: this.tokenMarkers,
+      pendingNotifications: this.pendingNotifications,
     }, null, 2));
+    // 关键词索引独立存盘（session.json 字段不动）
+    saveKeywords(this.id, this.keywordIndex);
   }
 }

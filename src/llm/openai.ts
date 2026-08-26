@@ -25,7 +25,7 @@ export const openaiProvider: LLMProvider = {
     return { role: 'tool', tool_call_id: toolCallId, content: output } as unknown as ChatMessage;
   },
 
-  async call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string): Promise<LLMResponse> {
+  async call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string, maxTokens?: number): Promise<LLMResponse> {
     const baseUrl = openaiBase || 'https://api.deepseek.com';
     const apiMessages: Array<Record<string, unknown>> = [{ role: 'system', content: systemPrompt }];
 
@@ -48,6 +48,10 @@ export const openaiProvider: LLMProvider = {
             }));
           }
         }
+        // 跳过空 assistant 消息（既无 content 又无 tool_calls）——否则 DeepSeek 报
+        // "Invalid assistant message: content or tool_calls must be set" 400。
+        // 来源：推理模型在工具结果后可能返回空回合，被 query_loop push 成空 content。
+        if (!entry.content && !entry.tool_calls) continue;
         apiMessages.push(entry);
       } else if (m.role === 'tool') {
         const toolMsg = m as unknown as Record<string, unknown>;
@@ -59,7 +63,7 @@ export const openaiProvider: LLMProvider = {
       }
     }
 
-    const r = await fetchWithRetry(`${baseUrl}/v1/chat/completions`, {
+    const { status, ok, text } = await fetchWithRetry(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -68,17 +72,17 @@ export const openaiProvider: LLMProvider = {
       body: JSON.stringify({
         model,
         messages: apiMessages,
-        max_tokens: 4096,
+        max_tokens: maxTokens ?? 384000,
         tools,
         tool_choice: 'auto',
       }),
     });
-    if (!r.ok) throw new Error(`API ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    if (!ok) throw new Error(`API ${status}: ${text.slice(0, 200)}`);
     let d: Record<string, unknown>;
     try {
-      d = await r.json() as Record<string, unknown>;
+      d = JSON.parse(text) as Record<string, unknown>;
     } catch (e) {
-      throw new Error(`Unterminated string in JSON: ${(e as Error).message}`.slice(0, 200));
+      throw new Error(`Invalid JSON from API: ${(e as Error).message}`.slice(0, 200));
     }
     const choice = (d.choices as Array<Record<string, unknown>>)?.[0];
     const msg = choice?.message as Record<string, unknown> | undefined;

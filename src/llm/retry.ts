@@ -9,8 +9,8 @@
 /** 判断是否值得重试 */
 export function isRetryable(err: Error): boolean {
   const msg = err.message.toLowerCase();
-  // 超时/中止/JSON残废 → 重试
-  if (msg.includes('abort') || msg.includes('timeout') || msg.includes('unterminated')) return true;
+  // 超时/中止/响应体被截断（undici "terminated"）→ 重试
+  if (msg.includes('abort') || msg.includes('timeout') || msg.includes('terminated')) return true;
   // 服务过载 → 重试
   if (msg.includes('529') || msg.includes('overloaded')) return true;
   // DNS/网络配置问题 → 重试没用
@@ -22,11 +22,19 @@ export function isRetryable(err: Error): boolean {
   return true;
 }
 
+export interface FetchResult {
+  status: number;
+  ok: boolean;
+  text: string;
+}
+
 /**
  * 带重试和超时的 fetch。
  * - 单次请求超时 120s
  * - 退避: 指数 + 25% jitter（防惊群）+ 优先 retry-after 头
  * - ECONNRESET → 下次重试 Connection: close（禁用 keep-alive 死连接）
+ * - 响应体在重试循环内完整读取：中途被截断（undici "terminated"）也纳入重试，
+ *   而不是丢给调用方在重试循环之外才报错。
  */
 export async function fetchWithRetry(
   url: string,
@@ -34,7 +42,7 @@ export async function fetchWithRetry(
   retries = 10,
   perRequestTimeoutMs = 120_000,
   totalTimeoutMs = 600_000,
-): Promise<Response> {
+): Promise<FetchResult> {
   const totalController = new AbortController();
   const totalTimer = setTimeout(() => totalController.abort(), totalTimeoutMs);
 
@@ -70,7 +78,10 @@ export async function fetchWithRetry(
           await new Promise(resolve => setTimeout(resolve, Math.min(delay, 60_000)));
           continue;
         }
-        return r;
+
+        // 在重试循环内完整读取 body：截断（terminated）会抛错，走下方 catch 重试
+        const text = await r.text();
+        return { status: r.status, ok: r.ok, text };
       } catch (e) {
         lastErr = e as Error;
         if (totalController.signal.aborted) throw lastErr;

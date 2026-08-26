@@ -25,17 +25,17 @@ export const anthropicProvider: LLMProvider = {
     };
   },
 
-  async call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[]): Promise<LLMResponse> {
+  async call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string, maxTokens?: number): Promise<LLMResponse> {
     const body: Record<string, unknown> = {
       model,
-      max_tokens: 4096,
+      max_tokens: maxTokens ?? 384000,
       system: systemPrompt,
       messages: messages
         .filter(m => m.role === 'user' || m.role === 'assistant')
         .map(m => ({ role: m.role, content: m.content })),
       tools,
     };
-    const r = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
+    const { status, ok, text } = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -44,8 +44,13 @@ export const anthropicProvider: LLMProvider = {
       },
       body: JSON.stringify(body),
     });
-    if (!r.ok) throw new Error(`API ${r.status}: ${(await r.text()).slice(0, 200)}`);
-    const d = await r.json() as Record<string, unknown>;
+    if (!ok) throw new Error(`API ${status}: ${text.slice(0, 200)}`);
+    let d: Record<string, unknown>;
+    try {
+      d = JSON.parse(text) as Record<string, unknown>;
+    } catch (e) {
+      throw new Error(`Invalid JSON from API: ${(e as Error).message}`.slice(0, 200));
+    }
     return {
       content: (d.content as Array<unknown>) || [],
       stop_reason: (d.stop_reason as string) || '',

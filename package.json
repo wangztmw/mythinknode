@@ -1,0 +1,33 @@
+{
+  "name": "@wangzt_mw/mythinknode",
+  "version": "1.0.0",
+  "description": "Minimal AI coding agent with multi-agent cluster — stripped, independent, research-grade",
+  "type": "module",
+  "main": "dist/Mythinknode.js",
+  "bin": {
+    "mythinknode": "bin/mythinknode.js",
+    "mtn": "bin/mtn.js"
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "start": "node dist/Mythinknode.js",
+    "dev": "npx tsx src/Mythinknode.ts",
+    "test": "npm run build && node Plan/cli-test/test-suite.mjs && node Plan/cli-test/test-wrap-line.mjs && node Plan/cli-test/test-wrap-model.mjs && node Plan/cli-test/test-wrap.mjs && node Plan/cli-test/test-session.mjs && node Plan/cli-test/test-ansi.mjs && node Plan/cli-test/test-status-diff.mjs && node Plan/cli-test/test-cell-grid.mjs && node Plan/cli-test/test-screen-buffer.mjs && node Plan/cli-test/test-write-frequency.mjs && node Plan/cli-test/test-empty-assistant.mjs"
+  },
+  "dependencies": {
+    "zod": "~4.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
