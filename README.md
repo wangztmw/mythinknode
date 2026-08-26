@@ -1,6 +1,14 @@
 # mythinknode
 
-一个从 Claude Code 源码精简重构而来的**极简 AI 编码 Agent**。单进程、统一循环、信号式多 Agent 集群，加上一个跨会话的树状经验知识图（NodeMind）。
+一个极简 AI 编码 Agent —— 用来**探索支撑智能的结构，以及智能的边界**。
+
+当前各种 Agent 的最简骨架，一句话：
+
+```
+session_loop × query_loop（LLM × tool）
+```
+
+`session_loop` 管一条会话的完整管线（前置检索 → 执行 → 反思 → 压缩），`query_loop` 管单轮 LLM ↔ tool 循环。二者叠加，就是 Agent 的全部骨架。
 
 **~8,100 行 TypeScript · 16 个工具 · 零运行时依赖（除 zod）· 零遥测 · 研究级可读性。**
 
@@ -13,9 +21,12 @@ mtn
 
 ## 为什么会有这个项目
 
-Claude Code 是 50 万行的庞然大物：遥测、成本追踪、企业级云功能、多产品线耦合。这个项目把它剥到只剩骨架，证明一件事——**一个能用的编码 Agent 不需要那么复杂**。
+为了探索**支撑智能的结构，以及智能的边界**。具体两条线：
 
-重构过程中没有删到"能跑"就停，而是在三条主线上做了独立的、可复用的创新。下面按价值排序。
+- **智能搜索算法** —— 让大模型根据标签（keywords）与树/图结构实现高效搜索。不是把答案向量化整块喂给模型，而是让它沿着标签和结构的分支自己找到路。
+- **智能管理** —— 让大模型区分知识的内在结构，并通过人机协同构建知识体系。Agent 在循环中打标签，模型在会话后反思落盘，知识在人机协同中生长。
+
+这两条线落在 NodeMind 上；再往后，「跨书知识」（InferMem）和「思维-执行轨迹」（TraitGraph）把探索延伸到知识的图结构、思考的图结构。下面按价值排序。
 
 ---
 
@@ -49,7 +60,7 @@ Claude Code 是 50 万行的庞然大物：遥测、成本追踪、企业级云�
 
 ### 2. 统一 Agent 循环 —— 一份代码驱动主 Agent 和子 Agent
 
-主 Agent 和子 Agent 在 Claude Code 里是两套不同的循环。这里合并成一份 `agentLoop()`（`src/query_loop.ts`，~220 行）。
+主 Agent 和子 Agent 共用同一份循环 `agentLoop()`（`src/query_loop.ts`，~220 行）——不用为两种 Agent 维护两套代码。
 
 区别**全在 `AgentLoopParams` 配置里**——主 Agent 25 轮、子 Agent 10 轮；子 Agent 有 `serialTools`、有自己的 system prompt、有 `preRoundCheck` 拦截 kill/redirect 信号。同一份代码走 LLM 调用、工具执行、进度事件、token 统计。
 
