@@ -2,7 +2,7 @@
 
 一个从 Claude Code 源码精简重构而来的**极简 AI 编码 Agent**。单进程、统一循环、信号式多 Agent 集群，加上一个跨会话的树状经验知识图（NodeMind）。
 
-**~4,300 行 TypeScript · 13 个工具 · 零运行时依赖（除 zod）· 零遥测 · 研究级可读性。**
+**~8,100 行 TypeScript · 16 个工具 · 零运行时依赖（除 zod）· 零遥测 · 研究级可读性。**
 
 ```
 npm i -g @wangzt_mw/mythinknode
@@ -97,6 +97,30 @@ Claude Code 是 50 万行的庞然大物：遥测、成本追踪、企业级云�
 - **529 / overloaded 识别**（服务过载，值得重试）。
 - **并发信号量**：主 Agent + 所有子 Agent 共享一个计数器（默认 2），超出排队 FIFO，120s 超时兜底——防止多 Agent 同时轰炸 API 触发 429。
 
+### 7. InferMem —— 跨书知识 DAG（把 markdown 编译成图）
+
+NodeMind 记的是**经验**（怎么做事），InferMem 记的是**知识**（书/文档里的东西）。`src/infermem/` 是一个批量知识图编译器：把 markdown 文档切成块，抽取知识原子（`concept/definition/theorem/formula/table/case`），再语义消解成一张全局 DAG。
+
+关键设计：
+
+- **跨书合并**：不同书里的同一个概念靠 `identityKey = kind:scope路径:规范名` 合并成同一个节点；但 `case`（案例）附内容哈希**永不合并**——不同案例必须并存。
+- **原文不嵌进图**：原子只存 `{docId, segIndex, offset}` 指针，原文存 `sources/<docId>/content.json` 数组，反幻觉门要求每条边都有原文证据。
+- **隐式边推断**：除了显式抽取的关系，`link.ts` 还会推断 `derives/uses/generalizes` 等隐含依赖，标 `source='inferred'`。
+- **便宜模型干重活**：抽取 + 语义判断用快模型（`deepseek-v4-flash`）批量并发，主模型只做抽样验证。ingest 是后台任务（返回 jobId、防重入、逐块增量落盘）。
+
+工具：`Infer(path)` 摄入一本书，`InferQuery(status/query/read/walk/merge)` 查询、读邻居、走依赖锥、显式融合两棵树。存储：`~/.mythinknode/infermem/`。
+
+### 8. TraitGraph —— 会话级「思维-执行」轨迹图
+
+NodeMind 存**沉淀后的结论**，TraitGraph 存**本次会话里模型怎么一步步想、怎么试错、哪里折返**的过程。这是对"记录大模型如何思考和执行"的一次直接尝试。
+
+- **节点 = 思维状态**：`goal`（任务目标）+ `plan`（怎么达成）+ `direction`（打算尝试的方向）。
+- **边 = 一次尝试**：`action`（做了什么）+ `result`（得到什么结果）+ `outcome`（成败）。
+- **折返**：走不通就 `backtrack`，把这条边标 `dead`，frontier 回退到上一个节点，换个方向再试。
+- **模型显式写**：`goal/plan/direction` 是模型的内部状态，只有模型能精确表述——所以由模型用 `TraitGraph(plan/step/backtrack)` 显式记录，而不是事后自动抽取的二手猜测。
+
+存储与会话原文 `raws/` 平级：`~/.mythinknode/sessions/{id}/traitraw/T{n}.json`，用 `T{n}` 标记索引（对齐 `S{n}` 索引 raws 的机制），Session Memory 能像召回 `S{n}` 块一样召回 `T{n}` 节点注入背景。
+
 ---
 
 ## 架构
@@ -116,24 +140,28 @@ src/
 ├── llm/                    双 Provider（Anthropic + OpenAI/DeepSeek）+ 重试 + 并发
 ├── session/                会话持久化 + 消息压缩（MessageProcessor）
 ├── nodemind/               树状经验图：Store / Navigator / Reflector
-└── tools/                  13 个工具
+├── infermem/               跨书知识 DAG：chunker / extractor / resolve / link / store
+├── traitgraph/             会话级思维-执行轨迹图：schema / store / recall / format
+└── tools/                  16 个工具
     ├── core/               Tool 接口 + buildTool 工厂
     ├── agent/              Agent（spawn/check/wait_any/direct/kill）
     ├── file/               Read / Write / Edit / Glob / Grep
     ├── exec/               Bash
     ├── search/             WebSearch（Tavily）/ WebFetch
     ├── external/           MCP / Skill
-    └── nodemind/           Knowledge（search/read/browse）/ Remember（tag）
+    ├── nodemind/           Knowledge（search/read/browse）/ Remember（tag）
+    ├── infermem/           Infer（构建 DAG）/ InferQuery（查询/走锥/融合）
+    └── traitgraph/         TraitGraph（plan/step/backtrack/status/read）
 ```
 
 **一次 Session 的完整管线**：
 
 ```
-CLI 输入 → Session 管理 → NodeMind 前置检索 → Agent 循环（LLM + 工具）
+CLI 输入 → Session 管理 → NodeMind 前置检索 → traitGraph 召回 → Agent 循环（LLM + 工具）
     → NodeMind 后置反思 → MessageProcessor 压缩 → CLI 渲染 → 持久化
 ```
 
-7 个模块各守一段管线，通过 `session_loop.ts` 串联。模块内部自由，模块间只有一种耦合：**数据进、数据出**。
+9 个模块各守一段管线，通过 `session_loop.ts` 串联。模块内部自由，模块间只有一种耦合：**数据进、数据出**。
 
 ---
 
@@ -180,8 +208,8 @@ mtn                                        # 或: mythinknode
 ## 开发
 
 ```bash
-git clone https://github.com/wangztmw/my-coder.git
-cd my-coder
+git clone https://github.com/wangztmw/mythinknode.git
+cd mythinknode
 npm install
 npm run build        # tsc 编译到 dist/
 npm run dev          # tsx 直接跑源码

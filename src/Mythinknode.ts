@@ -60,6 +60,20 @@ async function main() {
   });
   setSearchLLM(searchLLM);
 
+  // infermem ingest 专用 LLM:抽取+语义判断用便宜/快模型(决策 #5),不挤主循环的 max=2。
+  // 关键:不能用 deepseek-v4-pro(推理模型)——思考阶段超长,会卡在 fetchWithRetry 的 120s 单请求超时。
+  const { setInfermemLLM } = await import('./infermem/ingest.js');
+  const ingestLLM = resolveLLM({
+    provider: config.provider,
+    apiKey: config.apiKey,
+    model: 'deepseek-v4-flash',   // 快模型:抽取 + 语义判断
+    openaiBase: config.openaiBase,
+    tools: [],  // 抽取不需要工具
+    systemPrompt: '',
+    maxConcurrency: 4,     // 与 ingest 的 INGEST_CONCURRENCY 对齐
+  });
+  setInfermemLLM(ingestLLM);
+
   if (shouldResume) {
     const picked = await Session.pickSession();
     if (picked) {

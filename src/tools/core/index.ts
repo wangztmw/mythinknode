@@ -12,6 +12,9 @@ import { SkillTool } from '../external/SkillTool/SkillTool.js';
 import { AgentTool } from '../agent/AgentTool/AgentTool.js';
 import { KnowledgeTool } from '../nodemind/KnowledgeTool/KnowledgeTool.js';
 import { RememberTool } from '../nodemind/RememberTool/RememberTool.js';
+import { InferTool } from '../infermem/InferTool/InferTool.js';
+import { InferQueryTool } from '../infermem/InferQueryTool/InferQueryTool.js';
+import { TraitGraphTool } from '../traitgraph/TraitGraphTool/TraitGraphTool.js';
 
 export function getAllTools(): Tools {
   return [
@@ -28,5 +31,8 @@ export function getAllTools(): Tools {
     AgentTool,
     KnowledgeTool,
     RememberTool,
+    InferTool,
+    InferQueryTool,
+    TraitGraphTool,
   ].filter(t => t.isEnabled());
 }

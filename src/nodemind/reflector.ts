@@ -244,6 +244,8 @@ export class NodeMindReflector {
     try {
       const nodeId = decision.title
         .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+      // title 全中文/全符号时 slug 后为空 → 无合法 id,直接跳过(与 attr 同一根因)
+      if (!nodeId) return;
 
       // 确定父节点
       let parentId = decision.parentNode || 'root';
@@ -255,8 +257,11 @@ export class NodeMindReflector {
         for (const a of decision.attrs) {
           if (!a.title || !a.fields || Object.keys(a.fields).length === 0) continue;
           const type = ['code', 'command', 'config', 'note'].includes(a.type) ? a.type : 'note';
+          // title 全中文/全符号时 slug 后为空 → 直接丢弃，避免 store 校验报 "attr '?' missing"
+          const attrId = a.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+          if (!attrId) continue;
           attrs.push({
-            id: a.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40),
+            id: attrId,
             title: a.title,
             type,
             content: a.content || '',

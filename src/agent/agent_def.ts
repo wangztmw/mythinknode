@@ -142,6 +142,7 @@ export class AgentEngine {
       `- Knowledge(browse) to see what's available. Knowledge(read) for full details including code/commands/configs.`,
       `- If you discover something reusable (a working method, a pitfall, concrete data): Remember(action='tag', ...). Reflector integrates it into the tree after the session.`,
       `- [S1], [S2]... are compressed past sessions (GOAL → TIMELINE → FINDINGS → FILES → NUMBERS). Full originals: raws/S{n}.json.`,
+      `- TraitGraph records YOUR thinking-execution trail for THIS session: TraitGraph(action='plan', goal, plan, direction) to open a goal, TraitGraph(action='step', step_action, result, outcome) after each attempt, TraitGraph(action='backtrack', to=...) when a direction fails. It survives compression — check TraitGraph(action='status') to resume where you left off. [T1], [T2]... are its nodes, full text in traitraw/T{n}.json.`,
       ``,
       `## Agent Dispatch Guide`,
       `  DIRECT (handle yourself): single file edit, simple fact lookup, atomic git commit.`,

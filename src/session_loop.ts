@@ -14,6 +14,9 @@ import { NodeMindStore } from './nodemind/nodeMind_manage.js';
 import { NodeMindPreNavigator } from './nodemind/preNavigator.js';
 import { NodeMindReflector } from './nodemind/reflector.js';
 import { flushPendingNotes, formatPendingNotes } from './tools/nodemind/RememberTool/RememberTool.js';
+import { setTraitGraphSessionId, clearTraitGraphSessionId } from './traitgraph/index.js';
+import { recallTraits } from './traitgraph/recall.js';
+import { renderNode } from './traitgraph/format.js';
 import type { ChatMessage } from './llm/types.js';
 
 // ---- 模块级 pipeline 组件（惰性初始化） ----
@@ -91,6 +94,7 @@ export async function runSession(
   userInput: string,
 ): Promise<{ text: string; ms: number; inputTokens: number; outputTokens: number }> {
   const startTime = Date.now();
+  setTraitGraphSessionId(session.id);
   const nodemind = getNodeMind();
   const processor = getProcessor(engine.llm, session.id);
   const reminder = getReminder(engine.llm);
@@ -122,6 +126,18 @@ export async function runSession(
       });
     }
   } catch (e) { console.error('[NodeMind] PreNavigator failed:', (e as Error).message); }
+
+  // ★ Pre-query: traitGraph 召回之前的思考轨迹并注入上下文
+  try {
+    const traitRecall = await recallTraits(userInput, session.id, engine.llm);
+    if (traitRecall.nodes.length > 0) {
+      const body = traitRecall.nodes.map(n => renderNode(n)).join('\n\n---\n\n');
+      queryMessages.push({
+        role: 'user',
+        content: `[TRAIT GRAPH — your earlier thinking-execution trail in this session]\n${body}\n\nUse TraitGraph(action='status') to see the full current graph, or TraitGraph(action='plan'|'step'|'backtrack') to continue recording.`
+      });
+    }
+  } catch (e) { console.error('[TraitGraph] recall failed:', (e as Error).message); }
 
   let loopResult = await agentLoop(engine, {
     messages: queryMessages,
@@ -200,6 +216,8 @@ export async function runSession(
     }
     taskStartLen = -1;
   }
+
+  clearTraitGraphSessionId();
 
   return {
     text: loopResult.text,
