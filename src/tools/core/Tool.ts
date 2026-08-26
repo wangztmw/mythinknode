@@ -1,7 +1,7 @@
 /**
  * tools — Clean Tool interface
  *
- * 按 Claude Code 原始架构重写，零断裂依赖。
+ * 精简的工具接口，零断裂依赖。
  */
 
 import type { z } from 'zod/v4';

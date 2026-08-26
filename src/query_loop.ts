@@ -98,7 +98,7 @@ async function executeTools(
     // 立刻显示工具名（0s）
     engine.emit({ type: 'thinking_tick', label: toolNames, elapsedMs: 0 });
 
-    // 心跳定时器（1s，对齐 Claude Code 节奏，避免高频 \r 覆写刺激 Terminal 渲染层）
+    // 心跳定时器（1s 心跳，避免高频 \r 覆写刺激 Terminal 渲染层）
     toolTick = setInterval(() => {
       engine.emit({ type: 'thinking_tick', label: toolNames, elapsedMs: Date.now() - toolStart });
     }, 1000);
@@ -169,7 +169,7 @@ export async function agentLoop(
       if (!silent) {
         engine.emit({ type: 'thinking_start', label: phase, time: thinkStart });
 
-        // 心跳：每 1s 推一个 tick（对齐 Claude Code，避免高频 \r 覆写刺激 Terminal）
+        // 心跳：每 1s 推一个 tick（避免高频 \r 覆写刺激 Terminal）
         tick = setInterval(() => {
           engine.emit({ type: 'thinking_tick', label: phase, elapsedMs: Date.now() - thinkStart });
         }, 1000);

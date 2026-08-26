@@ -1,7 +1,7 @@
 {
   "name": "@wangzt_mw/mythinknode",
   "version": "1.0.0",
-  "description": "Minimal AI coding agent with multi-agent cluster — stripped, independent, research-grade",
+  "description": "A minimal AI coding agent — exploring the structures that support intelligence and their boundaries",
   "type": "module",
   "main": "dist/Mythinknode.js",
   "bin": {
