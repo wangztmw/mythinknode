@@ -74,6 +74,12 @@ async function main() {
   });
   setInfermemLLM(ingestLLM);
 
+  // infermem 落盘兜底:进程退出/被 kill 时强制写盘(即使 dirty 已清除,内存数据仍须落盘)。
+  // process.on('exit') 覆盖正常退出与未捕获异常;SIGTERM 覆盖 kill 命令。
+  const { saveAllStores } = await import('./infermem/store.js');
+  process.on('exit', () => { try { saveAllStores(); } catch { /* 退出清理,静默 */ } });
+  process.on('SIGTERM', () => { try { saveAllStores(); } catch { /* 忽略 */ } process.exit(0); });
+
   if (shouldResume) {
     const picked = await Session.pickSession();
     if (picked) {

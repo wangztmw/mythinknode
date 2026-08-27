@@ -184,12 +184,12 @@ export async function runIngestJob(
       atomCount: store.countAtoms(), edgeCount: store.countEdges(),
       updatedAt: new Date().toISOString(),
     });
-    store.flush();
+    store.flush(true);   // 强制落盘(即使 dirty 已清除、目录被删也能重建)
     job.status = 'done';
   } catch (e) {
     job.status = 'failed';
     job.error = (e as Error).message;
-    store.flush();   // 尽量落盘已抽到的内容
+    store.flush(true);   // 强制落盘已抽到的内容(目录被删也能重建)
     throw e;
   }
 }

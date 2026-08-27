@@ -283,14 +283,21 @@ export class InferMemStore {
   countEdges(): number { return this.edges.size; }
   listAtoms(): KnowledgeAtom[] { return [...this.atoms.values()]; }
 
-  flush(): void {
-    if (!this.dirty) return;
+  /**
+   * 落盘:默认按脏标记跳过(避免无谓重写),force=true 时忽略脏标记强制写盘。
+   * 强制落盘用于关键时点(ingest 收尾/进程退出),即使 dirty 已清除、目录被误删也能重建。
+   */
+  flush(force = false): void {
+    if (!force && !this.dirty) return;
     mkdirSync(this.dir(), { recursive: true });
     writeJson(this.indexP(), Object.fromEntries(this.byKey));
     writeFileSync(this.atomsP(), [...this.atoms.values()].map(a => JSON.stringify(a)).join('\n'));
     writeFileSync(this.edgesP(), [...this.edges.values()].map(e => JSON.stringify(e)).join('\n'));
     this.dirty = false;
   }
+
+  /** 显式持久化:忽略脏标记,强制写盘(目录被误删也能重建)。 */
+  save(): void { this.flush(true); }
 }
 
 // ---- per-corpus 实例注册表 ----
@@ -303,6 +310,11 @@ export function getStore(corpusId: string): InferMemStore {
 }
 
 export function _resetStores(): void { _stores.clear(); }
+
+/** 进程退出兜底:强制落盘所有已初始化的 corpus(即使 dirty 已清除、目录被删也能重建)。 */
+export function saveAllStores(): void {
+  for (const s of _stores.values()) s.flush(true);
+}
 
 // ---- 全局 corpus 注册表(corpus.json) ----
 
