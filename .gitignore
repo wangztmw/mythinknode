@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.tsbuildinfo
-Plan/Backup/
+docs/
+Plan/
 .DS_Store
 *.log
