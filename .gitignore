@@ -4,5 +4,6 @@ dist/
 .codegraph/
 docs/
 Plan/
+bin/
 .DS_Store
 *.log
