@@ -54,7 +54,7 @@ export class ConfigStore {
   }
 
   /** 合并写入 ~/.mythinknode/config.json */
-  save(partial: Partial<{ apiKey: string; model: string; provider: string; openaiBase: string; tavilyApiKey: string }>): void {
+  save(partial: Partial<{ apiKey: string; model: string; provider: string; openaiBase: string; tavilyApiKey: string; visionProvider: string; visionModel: string }>): void {
     try {
       const dir = ConfigStore._dir();
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -99,7 +99,7 @@ export class ConfigStore {
   private static _dir(): string { return join(homedir(), '.mythinknode'); }
   private static _path(): string { return join(ConfigStore._dir(), 'config.json'); }
 
-  static _loadFile(): { apiKey?: string; model?: string; provider?: string; openaiBase?: string; tavilyApiKey?: string } {
+  static _loadFile(): { apiKey?: string; model?: string; provider?: string; openaiBase?: string; tavilyApiKey?: string; visionProvider?: string; visionModel?: string; visionThinking?: boolean } {
     try {
       if (!existsSync(ConfigStore._path())) return {};
       const raw = readFileSync(ConfigStore._path(), 'utf-8');
