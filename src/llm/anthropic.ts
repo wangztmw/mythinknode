@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod/v4';
-import type { Tools } from '../tools/core/Tool.js';
+import { resolveDescription, type Tools } from '../tools/core/Tool.js';
 import type { LLMProvider, ChatMessage, LLMResponse } from './types.js';
 import { fetchWithRetry } from './retry.js';
 
@@ -11,11 +11,11 @@ export const anthropicProvider: LLMProvider = {
   name: 'anthropic',
 
   formatTools(tools: Tools) {
-    return tools.map(t => ({
+    return Promise.all(tools.map(async t => ({
       name: t.name,
-      description: t.description,
+      description: await resolveDescription(t.description),
       input_schema: (z as unknown as { toJSONSchema: (s: z.ZodType) => Record<string, unknown> }).toJSONSchema(t.inputSchema),
-    }));
+    })));
   },
 
   formatToolResult(toolCallId: string, output: string): ChatMessage {

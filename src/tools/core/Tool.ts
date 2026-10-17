@@ -60,13 +60,15 @@ export type PermissionResult = {
 // ============================================================
 // Tool interface
 // ============================================================
+export type ToolDescription = string | (() => string | Promise<string>);
+
 export type Tool<
   Input extends z.ZodType<Record<string, unknown>> = z.ZodType<Record<string, unknown>>,
   Output = unknown,
 > = {
   readonly name: string;
   readonly inputSchema: Input;
-  readonly description: () => Promise<string>;
+  readonly description: ToolDescription;
   call(args: z.infer<Input>, context: ToolUseContext): Promise<ToolResult<Output>>;
   isReadOnly(args: z.infer<Input>): boolean;
   isEnabled(): boolean;
@@ -91,6 +93,20 @@ export type ToolDef<
 // Tools collection
 // ============================================================
 export type Tools = readonly Tool[];
+
+// ============================================================
+// resolveDescription — 把 Tool.description 归一成字符串
+// （async 函数 / Promise / 字符串 统一 await 后返回）
+// ============================================================
+export async function resolveDescription(desc: ToolDescription): Promise<string> {
+  try {
+    if (typeof desc === 'string') return desc;
+    const r = await desc();
+    return typeof r === 'string' ? r : String(r ?? '');
+  } catch {
+    return '';
+  }
+}
 
 // ============================================================
 // buildTool factory

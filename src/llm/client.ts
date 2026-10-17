@@ -14,14 +14,27 @@ export function createLLMClient(config: {
   tools: Tools;
   systemPrompt: string;
   maxConcurrency?: number;
+  maxTokensCap?: number;
 }): LLMClient {
   const limiter = new ConcurrencyLimiter(config.maxConcurrency ?? 2);
-  const formattedTools = config.provider.formatTools(config.tools);
+  let currentTools: Tools = config.tools;
 
   return {
+    updateTools(tools: Tools): void {
+      currentTools = tools;
+    },
+
     async chat(messages: ChatMessage[], systemPrompt?: string, maxTokens?: number): Promise<LLMResponse> {
       await limiter.acquire();
       try {
+        // 每次调用都重新 formatTools：工具描述可能是 async 函数，需 await 解析；
+        // 动态注册工具后 currentTools 变化也能即时反映。
+        const formattedTools = await config.provider.formatTools(currentTools);
+        // 本地 ctx 有限：把云端默认 384000 钳到 maxTokensCap（如 4096）
+        let effectiveMax = maxTokens;
+        if (config.maxTokensCap) {
+          effectiveMax = Math.min(maxTokens ?? config.maxTokensCap, config.maxTokensCap);
+        }
         return await config.provider.call(
           systemPrompt ?? config.systemPrompt,
           messages,
@@ -29,7 +42,7 @@ export function createLLMClient(config: {
           config.model,
           formattedTools,
           config.openaiBase,
-          maxTokens,
+          effectiveMax,
         );
       } finally {
         limiter.release();

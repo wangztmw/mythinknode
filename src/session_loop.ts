@@ -51,6 +51,16 @@ function getReminder(llm: { chat: any }): MessageReminder {
   return _reminder;
 }
 
+/**
+ * 切换 LLM（/local ↔ /cloud）时重置缓存旧 llm 引用的 pipeline 组件，
+ * 否则 MessageProcessor / MessageReminder 会继续用切换前的模型。
+ */
+export function resetPipelineCaches(): void {
+  _processor = null;
+  _processorSessionId = null;
+  _reminder = null;
+}
+
 // ---- 跨轮次状态 ----
 
 /** 记录当前逻辑任务的起点。max_rounds 后"继续"时复用 */

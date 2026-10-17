@@ -5,14 +5,54 @@
  * Query 循环 (query_loop.ts):  for 轮次 LLM ↔ tool
  */
 
-import { ConfigStore } from './config.js';
+import { ConfigStore, type ResolvedConfig } from './config.js';
 import { getAllTools } from './tools/core/index.js';
 import { resolveLLM } from './llm/resolve.js';
+import { ensureLocalServer, localModelName, stopLocalServer, LOCAL_MAX_TOKENS } from './llm/local.js';
 import { AgentEngine } from './agent/agent_def.js';
 import { Session } from './session/session_manage.js';
-import { runSession } from './session_loop.js';
+import { runSession, resetPipelineCaches } from './session_loop.js';
 import { createCLI } from './cli/cli.js';
+import type { LLMClient } from './llm/types.js';
+import type { Tools } from './tools/core/Tool.js';
 // 不再需要全局 stream monkey-patch。折行保护仅在 renderResult 中通过 safeWrite 显式应用。
+
+// ---- LLM 装配（/local ↔ /cloud 运行时切换复用）----
+
+interface LLMRefs { llm: LLMClient; searchLLM: LLMClient; ingestLLM: LLMClient; }
+
+function buildLLMs(cfg: ResolvedConfig, tools: Tools): LLMRefs {
+  const sub = {
+    provider: cfg.provider,
+    apiKey: cfg.apiKey,
+    model: localModelName('deepseek-v4-flash', cfg.local),
+    openaiBase: cfg.openaiBase,
+    tools: [] as unknown as Tools,
+    systemPrompt: '',
+    maxConcurrency: cfg.local ? 2 : 4,
+    maxTokensCap: cfg.local ? LOCAL_MAX_TOKENS : undefined,
+  };
+  return {
+    llm: resolveLLM({
+      provider: cfg.provider, apiKey: cfg.apiKey, model: cfg.model, openaiBase: cfg.openaiBase,
+      tools, systemPrompt: '', maxTokensCap: cfg.local ? LOCAL_MAX_TOKENS : undefined,
+    }),
+    searchLLM: resolveLLM(sub),
+    ingestLLM: resolveLLM(sub),
+  };
+}
+
+function applyLLMs(
+  engine: AgentEngine,
+  refs: LLMRefs,
+  setSearchLLM: (l: any) => void,
+  setInfermemLLM: (l: any) => void,
+): void {
+  engine.llm = refs.llm;
+  setSearchLLM(refs.searchLLM);
+  setInfermemLLM(refs.ingestLLM);
+  resetPipelineCaches();  // MessageProcessor / MessageReminder 缓存了旧 llm，须重建
+}
 
 // ---- 启动 ----
 
@@ -26,53 +66,27 @@ async function main() {
   const config = new ConfigStore();
   const tools = getAllTools();
 
-  config.save({
-    model: config.model,
-    provider: config.provider,
-    openaiBase: config.openaiBase,
-  });
+  // 本地模式：自动拉起 llama-server（没开就启动并等就绪）
+  if (config.local) {
+    await ensureLocalServer();
+  }
+
+  // 仅在非本地模式回写配置（本地是临时覆盖，不能把 qwen3.5-4b/本地 base 写回 config.json 污染云端配置）
+  if (!config.local) {
+    config.save({ model: config.model, provider: config.provider, openaiBase: config.openaiBase });
+  }
 
   const sessionId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const session = new Session(sessionId);
 
-  const llm = resolveLLM({
-    provider: config.provider,
-    apiKey: config.apiKey,
-    model: config.model,
-    openaiBase: config.openaiBase,
-    tools,
-    systemPrompt: '',
-  });
-
-  const engine = new AgentEngine(llm, tools);
-  engine.onNotify = (msg: string) => session.addNotification(msg);
-
-  // 搜索专用轻量 LLM
   const { setSearchLLM } = await import('./nodemind/nodeMind_manage.js');
-  const searchLLM = resolveLLM({
-    provider: config.provider,
-    apiKey: config.apiKey,
-    model: 'deepseek-v4-flash',
-    openaiBase: config.openaiBase,
-    tools: [],  // 搜索不需要工具
-    systemPrompt: '',
-    maxConcurrency: 4,  // 搜索可以更高并发
-  });
-  setSearchLLM(searchLLM);
-
-  // infermem ingest 专用 LLM:抽取+语义判断用便宜/快模型(决策 #5),不挤主循环的 max=2。
-  // 关键:不能用 deepseek-v4-pro(推理模型)——思考阶段超长,会卡在 fetchWithRetry 的 120s 单请求超时。
   const { setInfermemLLM } = await import('./infermem/ingest.js');
-  const ingestLLM = resolveLLM({
-    provider: config.provider,
-    apiKey: config.apiKey,
-    model: 'deepseek-v4-flash',   // 快模型:抽取 + 语义判断
-    openaiBase: config.openaiBase,
-    tools: [],  // 抽取不需要工具
-    systemPrompt: '',
-    maxConcurrency: 4,     // 与 ingest 的 INGEST_CONCURRENCY 对齐
-  });
-  setInfermemLLM(ingestLLM);
+
+  let refs = buildLLMs(config, tools);
+
+  const engine = new AgentEngine(refs.llm, tools);
+  engine.onNotify = (msg: string) => session.addNotification(msg);
+  applyLLMs(engine, refs, setSearchLLM, setInfermemLLM);
 
   // infermem 落盘兜底:进程退出/被 kill 时强制写盘(即使 dirty 已清除,内存数据仍须落盘)。
   // process.on('exit') 覆盖正常退出与未捕获异常;SIGTERM 覆盖 kill 命令。
@@ -102,6 +116,7 @@ async function main() {
   cli.writeLines(
     `mythinknode v0.6.0\n` +
     `Provider: ${config.provider}  |  Model: ${config.model}  |  Tools: ${tools.length}\n` +
+    (config.local ? `本地模式: llama-server @ ${config.openaiBase}（切回云端: /cloud）\n` : '') +
     `Config: ~/.mythinknode/config.json  |  Memory: ~/.mythinknode/MYTHINKNODE.md\n` +
     `Type /help for commands, /exit to quit\n`
   );
@@ -118,6 +133,26 @@ async function main() {
     }
     if (line === '/help') {
       cli.showHelp(tools.map(t => t.name));
+      continue;
+    }
+    if (line === '/local' || line === '/cloud') {
+      try {
+        if (line === '/local') {
+          const localCfg = ConfigStore.localPreset();
+          await ensureLocalServer();
+          refs = buildLLMs(localCfg, tools);
+          applyLLMs(engine, refs, setSearchLLM, setInfermemLLM);
+          cli.writeLines(`✅ 已切换到本地模型 ${localCfg.model}（${localCfg.openaiBase}）`);
+        } else {
+          const cloudCfg = ConfigStore.resolveCloud();
+          stopLocalServer();
+          refs = buildLLMs(cloudCfg, tools);
+          applyLLMs(engine, refs, setSearchLLM, setInfermemLLM);
+          cli.writeLines(`✅ 已切回云端模型 ${cloudCfg.model}（本地服务已停止）`);
+        }
+      } catch (e) {
+        cli.renderError((e as Error).message || String(e));
+      }
       continue;
     }
     if (!line) continue;

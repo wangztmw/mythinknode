@@ -16,6 +16,7 @@ export function resolveLLM(config: {
   tools: Tools;
   systemPrompt: string;
   maxConcurrency?: number;
+  maxTokensCap?: number;
 }): LLMClient {
   const provider: LLMProvider = config.provider === 'anthropic' ? anthropicProvider : openaiProvider;
   return createLLMClient({ ...config, provider });

@@ -136,7 +136,7 @@ export function createRenderer(ss: ScreenStateLike) {
 
     showHelp(toolNames: string[]): void {
       ss.writeLines(`Tools: ${toolNames.join(', ')}`);
-      ss.writeLines(`Commands: /exit, /help`);
+      ss.writeLines(`Commands: /exit, /help, /local, /cloud`);
     },
   };
 }

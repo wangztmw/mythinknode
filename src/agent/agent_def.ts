@@ -109,6 +109,27 @@ export class AgentEngine {
     this.systemPrompt = this.buildSystemPrompt();
   }
 
+  // ---- 运行时工具注册（NodeMindTool 动态加载器用） ----
+
+  /** 注册一个工具到引擎 + 同步刷新 LLM 客户端的工具快照 + 重建 system prompt */
+  registerTool(tool: Tool): void {
+    this.toolMap.set(tool.name, tool);
+    this.toolContext.options.tools = [...this.toolMap.values()];
+    this.systemPrompt = this.buildSystemPrompt();
+    this.llm.updateTools?.([...this.toolMap.values()]);
+  }
+
+  /** 移除一个工具（动态工具卸载用） */
+  unregisterTool(name: string): boolean {
+    const removed = this.toolMap.delete(name);
+    if (removed) {
+      this.toolContext.options.tools = [...this.toolMap.values()];
+      this.systemPrompt = this.buildSystemPrompt();
+      this.llm.updateTools?.([...this.toolMap.values()]);
+    }
+    return removed;
+  }
+
   // ---- System Prompt ----
 
   buildSystemPrompt(): string {

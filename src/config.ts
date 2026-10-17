@@ -10,12 +10,18 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
+export interface ResolvedConfig {
+  apiKey: string; model: string; provider: 'anthropic' | 'openai';
+  openaiBase: string; tavilyApiKey?: string; local: boolean;
+}
+
 export class ConfigStore {
   apiKey: string;
   model: string;
   provider: 'anthropic' | 'openai';
   openaiBase: string;
   tavilyApiKey?: string;
+  local: boolean;
 
   constructor() {
     const resolved = ConfigStore.resolve();
@@ -24,13 +30,31 @@ export class ConfigStore {
     this.provider = resolved.provider;
     this.openaiBase = resolved.openaiBase;
     this.tavilyApiKey = resolved.tavilyApiKey;
+    this.local = resolved.local;
   }
 
   /** 环境变量 > 配置文件 */
-  static resolve(): {
-    apiKey: string; model: string; provider: 'anthropic' | 'openai';
-    openaiBase: string; tavilyApiKey?: string;
-  } {
+  static resolve(): ResolvedConfig {
+    const isLocal = process.env.MYTHINKNODE_LOCAL === '1' || process.argv.includes('--local');
+    return isLocal ? ConfigStore.localPreset() : ConfigStore.resolveCloud();
+  }
+
+  /** 本地模式预设（llama-server Qwen3.5），供 --local / /local 命令共用 */
+  static localPreset(): ResolvedConfig {
+    const fileConfig = ConfigStore._loadFile();
+    // 本地 llama-server 无需鉴权(假 key 同时让 provider 判定为 openai)
+    return {
+      apiKey: 'sk-local',
+      model: process.env.MYTHINKNODE_MODEL || 'qwen3.5-4b',
+      provider: 'openai',
+      openaiBase: 'http://127.0.0.1:8080',
+      tavilyApiKey: fileConfig.tavilyApiKey,
+      local: true,
+    };
+  }
+
+  /** 云端配置解析（强制忽略 local 开关），供启动 + /cloud 命令共用 */
+  static resolveCloud(): ResolvedConfig {
     const fileConfig = ConfigStore._loadFile();
     const envApiKey = process.env.MYTHINKNODE_API_KEY || process.env.ANTHROPIC_API_KEY || '';
     const apiKey = envApiKey || fileConfig.apiKey || '';
@@ -50,7 +74,7 @@ export class ConfigStore {
 
     const openaiBase = process.env.OPENAI_BASE_URL || fileConfig.openaiBase || 'https://api.deepseek.com';
 
-    return { apiKey, model, provider, openaiBase, tavilyApiKey: fileConfig.tavilyApiKey };
+    return { apiKey, model, provider, openaiBase, tavilyApiKey: fileConfig.tavilyApiKey, local: false };
   }
 
   /** 合并写入 ~/.mythinknode/config.json */
@@ -99,7 +123,7 @@ export class ConfigStore {
   private static _dir(): string { return join(homedir(), '.mythinknode'); }
   private static _path(): string { return join(ConfigStore._dir(), 'config.json'); }
 
-  static _loadFile(): { apiKey?: string; model?: string; provider?: string; openaiBase?: string; tavilyApiKey?: string; visionProvider?: string; visionModel?: string; visionThinking?: boolean } {
+  static _loadFile(): { apiKey?: string; model?: string; provider?: string; openaiBase?: string; tavilyApiKey?: string; visionProvider?: string; visionModel?: string; visionThinking?: boolean; localScriptsDir?: string } {
     try {
       if (!existsSync(ConfigStore._path())) return {};
       const raw = readFileSync(ConfigStore._path(), 'utf-8');
