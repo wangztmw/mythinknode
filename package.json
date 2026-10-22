@@ -19,16 +19,29 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc && node scripts/gen-bin.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.check.json",
     "prepare": "node scripts/gen-bin.mjs",
     "start": "node dist/Mythinknode.js",
     "dev": "npx tsx src/Mythinknode.ts",
-    "test": "npm run build && node Plan/cli-test/test-suite.mjs && node Plan/cli-test/test-wrap-line.mjs && node Plan/cli-test/test-wrap-model.mjs && node Plan/cli-test/test-wrap.mjs && node Plan/cli-test/test-session.mjs && node Plan/cli-test/test-ansi.mjs && node Plan/cli-test/test-status-diff.mjs && node Plan/cli-test/test-cell-grid.mjs && node Plan/cli-test/test-screen-buffer.mjs && node Plan/cli-test/test-write-frequency.mjs && node Plan/cli-test/test-empty-assistant.mjs"
+    "tui": "tsx src/cli/tui/index.tsx",
+    "tui:chat": "tsx src/Mythinknode.ts --tui",
+    "classic": "tsx src/Mythinknode.ts --classic",
+    "test": "npm run build && node Plan/cli-test/test-suite.mjs && node Plan/cli-test/test-wrap-line.mjs && node Plan/cli-test/test-wrap-model.mjs && node Plan/cli-test/test-wrap.mjs && node Plan/cli-test/test-session.mjs && node Plan/cli-test/test-ansi.mjs && node Plan/cli-test/test-status-diff.mjs && node Plan/cli-test/test-cell-grid.mjs && node Plan/cli-test/test-screen-buffer.mjs && node Plan/cli-test/test-write-frequency.mjs && node Plan/cli-test/test-empty-assistant.mjs && node Plan/cli-test/test-tui-layout.mjs && node Plan/cli-test/test-tui-markdown.mjs"
   },
   "dependencies": {
+    "ink": "^8.0.0",
+    "ink-big-text": "^2.0.0",
+    "ink-gradient": "^4.0.1",
+    "ink-spinner": "^5.0.0",
+    "react": "^19.3.1",
+    "string-width": "^8.3.0",
+    "wrap-ansi": "^10.0.2",
     "zod": "~4.4.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "^19.3.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.0"
   }
 }

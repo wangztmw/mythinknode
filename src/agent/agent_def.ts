@@ -31,13 +31,44 @@ export interface MemberState {
   pendingInstruction?: string;
 }
 
-import type { ToolCall, MergedTool, ProgressEvent } from './progress.js';
+import type { ToolCall, MergedTool, ProgressEvent, ToolPreview } from './progress.js';
 
 // ---- 工具函数 ----
 
 export function briefResult(data: string): string {
   const firstLine = data.split('\n')[0].slice(0, 80);
   return firstLine.length < data.length ? firstLine + '...' : firstLine;
+}
+
+/**
+ * 富预览（供新 TUI 使用）：最多 8 逻辑行 / 800 字符。
+ * 旧 UI 不读 preview，sample 与 briefResult 保持原样。
+ */
+export function briefPreview(data: string): ToolPreview {
+  const all = data.split('\n');
+  const totalLines = all.length;
+  const kept: string[] = [];
+  let chars = 0;
+  let charCapHit = false;
+
+  for (const line of all) {
+    if (kept.length >= 8) break;
+    const separator = kept.length > 0 ? 1 : 0;
+    if (chars + separator + line.length > 800) {
+      charCapHit = true;
+      if (kept.length === 0) kept.push([...line].slice(0, 800).join(''));
+      break;
+    }
+    kept.push(line);
+    chars += separator + line.length;
+  }
+
+  return {
+    text: kept.join('\n'),
+    totalLines,
+    shownLines: kept.length,
+    truncated: charCapHit || kept.length < totalLines,
+  };
 }
 
 export const SUB_AGENT_PROMPT = `You are a mythinknode sub-agent. Complete the assigned task and return a concise, specific report.
@@ -228,10 +259,15 @@ export class AgentEngine {
         last.count++;
         last.inputs.push(summary);
         last.lines += c.output.split('\n').length;
+        // 合并调用时 preview 只代表第一次输出，删除以免误导
+        last.preview = undefined;
       } else {
+        const lineCount = c.output.split('\n').length;
         merged.push({
           name: c.name, count: 1, inputs: [summary],
-          lines: c.output.split('\n').length, sample: briefResult(c.output),
+          lines: lineCount,
+          sample: briefResult(c.output),
+          preview: briefPreview(c.output),
         });
       }
     }

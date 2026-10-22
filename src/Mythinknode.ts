@@ -88,11 +88,27 @@ async function main() {
   engine.onNotify = (msg: string) => session.addNotification(msg);
   applyLLMs(engine, refs, setSearchLLM, setInfermemLLM);
 
+  // 本地模型生命周期追踪。/local 与 /cloud 可在运行时反复切换，
+  // 而 config.local 只是启动瞬间的快照（切到 /local 后它仍是 false），
+  // 因此必须用这个可变标志判断"退出时是否还有本地服务在跑"。
+  let isLocalModel = config.local;
+
+  /** 退出前停掉本地 llama-server。幂等：标志先置 false，防止 'exit' 与信号处理重复调用。 */
+  const shutdownLocalServer = (): void => {
+    if (!isLocalModel) return;
+    isLocalModel = false;
+    try { stopLocalServer(); } catch { /* 退出清理，静默 */ }
+  };
+
   // infermem 落盘兜底:进程退出/被 kill 时强制写盘(即使 dirty 已清除,内存数据仍须落盘)。
-  // process.on('exit') 覆盖正常退出与未捕获异常;SIGTERM 覆盖 kill 命令。
+  // 'exit' 是唯一可靠的收尾点：/exit、Ctrl+C(经典→process.exit、TUI→forceExit)、
+  // 未捕获异常、以及下面信号处理器里的 process.exit(0) 最终都会走到这里。
+  // 注意 handler 必须同步 —— saveAllStores 与 stopLocalServer(execFileSync) 均为同步调用。
   const { saveAllStores } = await import('./infermem/store.js');
-  process.on('exit', () => { try { saveAllStores(); } catch { /* 退出清理,静默 */ } });
-  process.on('SIGTERM', () => { try { saveAllStores(); } catch { /* 忽略 */ } process.exit(0); });
+  process.on('exit', () => {
+    try { saveAllStores(); } catch { /* 退出清理,静默 */ }
+    shutdownLocalServer();
+  });
 
   if (shouldResume) {
     const picked = await Session.pickSession();
@@ -109,8 +125,25 @@ async function main() {
 
   session.lock();
 
-  // Session 循环
-  const cli = createCLI();
+  // Session 循环 — 默认使用 Ink TUI；--classic / MYTHINKNODE_UI=classic 回退旧 CLI。
+  // 非 TTY（管道/重定向）无法进入 raw mode，自动回退旧 CLI，避免启动崩溃。
+  const wantsClassic = process.env.MYTHINKNODE_UI === 'classic' || process.argv.includes('--classic');
+  const canTui = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const useTui = !wantsClassic && canTui;
+  const cli = useTui
+    ? await (await import('./cli/tui/session.js')).createTuiCLI()
+    : createCLI();
+
+  // 外部信号（kill -TERM/-INT、终端挂断 SIGHUP）：统一走 cli.close() 先恢复终端
+  // （退出备用屏 / 关 bracketed paste / 还原 raw mode），其内部的 process.exit(0)
+  // 再触发上面的 'exit' 处理器完成存盘 + 停本地服务。
+  // 交互式 Ctrl+C 在 raw mode 下不会产生信号（经典/TUI 各自内部处理），此处是兜底。
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    process.on(sig, () => {
+      try { cli.close(); } catch { /* 回落到底部 exit */ }
+      process.exit(0);
+    });
+  }
 
   // banner 进备用屏 grid（console.log 会写到被隐藏的主屏）
   cli.writeLines(
@@ -129,6 +162,8 @@ async function main() {
       await session.summarize(engine.llm);  // LLM 分析对话 → 重命名目录
       session.save();
       session.unlock();
+      // 停服务必须在 summarize 之后：它可能还要调 LLM，本地模式先关机就调不通了。
+      shutdownLocalServer();
       cli.close();
     }
     if (line === '/help') {
@@ -140,12 +175,14 @@ async function main() {
         if (line === '/local') {
           const localCfg = ConfigStore.localPreset();
           await ensureLocalServer();
+          isLocalModel = true;
           refs = buildLLMs(localCfg, tools);
           applyLLMs(engine, refs, setSearchLLM, setInfermemLLM);
           cli.writeLines(`✅ 已切换到本地模型 ${localCfg.model}（${localCfg.openaiBase}）`);
         } else {
           const cloudCfg = ConfigStore.resolveCloud();
           stopLocalServer();
+          isLocalModel = false;
           refs = buildLLMs(cloudCfg, tools);
           applyLLMs(engine, refs, setSearchLLM, setInfermemLLM);
           cli.writeLines(`✅ 已切回云端模型 ${cloudCfg.model}（本地服务已停止）`);
