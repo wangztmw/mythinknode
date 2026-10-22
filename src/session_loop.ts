@@ -110,6 +110,7 @@ export async function runSession(
   const reminder = getReminder(engine.llm);
 
   session.flushNotifications();
+  if (!session.firstUserMessage) session.firstUserMessage = userInput;
   session.addMessage({ role: 'user', content: userInput });
 
   const currentLen = session.messages.length;
