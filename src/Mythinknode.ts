@@ -13,6 +13,7 @@ import { AgentEngine } from './agent/agent_def.js';
 import { Session } from './session/session_manage.js';
 import { runSession, resetPipelineCaches } from './session_loop.js';
 import { createCLI } from './cli/cli.js';
+import { VERSION } from './version.js';
 import type { LLMClient } from './llm/types.js';
 import type { Tools } from './tools/core/Tool.js';
 // 不再需要全局 stream monkey-patch。折行保护仅在 renderResult 中通过 safeWrite 显式应用。
@@ -147,7 +148,7 @@ async function main() {
 
   // banner 进备用屏 grid（console.log 会写到被隐藏的主屏）
   cli.writeLines(
-    `mythinknode v0.6.0\n` +
+    `mythinknode v${VERSION}\n` +
     `Provider: ${config.provider}  |  Model: ${config.model}  |  Tools: ${tools.length}\n` +
     (config.local ? `本地模式: llama-server @ ${config.openaiBase}（切回云端: /cloud）\n` : '') +
     `Config: ~/.mythinknode/config.json  |  Memory: ~/.mythinknode/MYTHINKNODE.md\n` +

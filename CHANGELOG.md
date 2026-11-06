@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 (2026-11-06)
+
+修复：
+
+- banner 版本号硬编码为 `v0.6.0`，与 package.json 不同步 —— 现统一由 `src/version.ts` 从 `package.json` 读取（`VERSION`），此后 bump 版本号 banner 自动跟随。
+
 ## 1.1.0 (2026-11-06)
 
 自 1.0.0 以来的功能增量，向后兼容：
