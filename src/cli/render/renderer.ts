@@ -3,7 +3,7 @@
  * 与输入层（input-buffer）完全解耦；所有终端写入经 ScreenStateLike（主屏 / 备用屏两模式）。
  */
 import type { ProgressEvent, MergedTool } from '../../agent/progress.js';
-import { mdToANSI, B, b } from './ansi.js';
+import { mdToANSI, B, b, C, c } from './ansi.js';
 import { displayWidth, charWidth, wrapLine } from './term-wrap.js';
 import type { ScreenStateLike } from './types.js';
 
@@ -63,6 +63,12 @@ function renderProgress(event: ProgressEvent, ss: ScreenStateLike): void {
       case 'thought': {
         const ansi = mdToANSI(event.text.slice(0, 300));
         ss.writeLines(`  ${ansi}`);  // 经 writeLines 折行，避免超长 thought 触发 Terminal 崩溃
+        break;
+      }
+      case 'notice': {
+        const icon = event.kind === 'budget' ? '⏳' : '🔁';
+        const line = `${icon} ${event.text.split('\n')[0]}`;
+        for (const row of wrapLine(line, cols)) ss.writeLines(`  ${C}${row}${c}`);
         break;
       }
       case 'tool_display': {

@@ -26,7 +26,7 @@
     "tui": "tsx src/cli/tui/index.tsx",
     "tui:chat": "tsx src/Mythinknode.ts --tui",
     "classic": "tsx src/Mythinknode.ts --classic",
-    "test": "npm run build && node Plan/cli-test/test-suite.mjs && node Plan/cli-test/test-wrap-line.mjs && node Plan/cli-test/test-wrap-model.mjs && node Plan/cli-test/test-wrap.mjs && node Plan/cli-test/test-session.mjs && node Plan/cli-test/test-ansi.mjs && node Plan/cli-test/test-status-diff.mjs && node Plan/cli-test/test-cell-grid.mjs && node Plan/cli-test/test-screen-buffer.mjs && node Plan/cli-test/test-write-frequency.mjs && node Plan/cli-test/test-empty-assistant.mjs && node Plan/cli-test/test-tui-layout.mjs && node Plan/cli-test/test-tui-markdown.mjs"
+    "test": "npm run build && node Plan/cli-test/test-suite.mjs && node Plan/cli-test/test-wrap-line.mjs && node Plan/cli-test/test-wrap-model.mjs && node Plan/cli-test/test-wrap.mjs && node Plan/cli-test/test-session.mjs && node Plan/cli-test/test-ansi.mjs && node Plan/cli-test/test-status-diff.mjs && node Plan/cli-test/test-cell-grid.mjs && node Plan/cli-test/test-screen-buffer.mjs && node Plan/cli-test/test-write-frequency.mjs && node Plan/cli-test/test-empty-assistant.mjs && node Plan/cli-test/test-tool-args.mjs && node Plan/cli-test/test-loop-resilience.mjs && node Plan/cli-test/test-loop-budget.mjs && node Plan/cli-test/test-tui-layout.mjs && node Plan/cli-test/test-tui-markdown.mjs"
   },
   "dependencies": {
     "ink": "^8.0.0",

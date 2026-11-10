@@ -125,6 +125,11 @@ export function createTuiCLI() {
             }
             break;
           }
+          case 'notice': {
+            const icon = event.kind === 'budget' ? '⏳' : '🔁';
+            store.append('system', `${icon} ${event.text.split('\n')[0]}`);
+            break;
+          }
           case 'tool_display': {
             const items: Array<Parameters<TuiStore['appendBatch']>[0][number]> = [];
             for (const call of event.calls) {

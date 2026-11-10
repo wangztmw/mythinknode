@@ -152,7 +152,13 @@ export async function runSession(
 
   let loopResult = await agentLoop(engine, {
     messages: queryMessages,
+    // 软预算：每 25 轮一次自检，模型自己决定收尾还是继续（最多续 3 次 → 上限 100 轮）。
+    // 同时给了硬护栏：重复调用 + 输出不变连续 6 轮 → 强停；墙钟 45 分钟 → 强停。
     maxRounds: 25,
+    maxExtensions: 3,
+    wallClockMs: 45 * 60_000,
+    noProgressWarn: 3,
+    noProgressStop: 6,
     onTurnComplete: (_msgs, tc) => { session.toolCount += tc; },
 
     phaseLabel: (i, lastMsg) => i === 0 ? 'analyzing' :
@@ -205,7 +211,11 @@ export async function runSession(
   }
 
   // ★ Post-query: NodeMind 反思（在压缩之前！分析原文并维护经验树）
-  if (loopResult.status === 'success') {
+  // 注意：max_rounds / blocked 也要进来。之前只判 success，导致「撞满轮数」既
+  // 不反思也不压缩 → 上下文原地爆掉 → 下一轮更容易再撞满。这是正反馈放大。
+  // 只把 killed/crashed 排除在外（会话被中止，消息流不完整，不适合压缩）。
+  const committed = loopResult.status !== 'killed' && loopResult.status !== 'crashed';
+  if (committed) {
     // 先 flush Remember 标签到消息流
     const notes = flushPendingNotes();
     if (notes.length > 0) {

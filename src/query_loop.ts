@@ -12,13 +12,28 @@ export interface LoopResult {
   text: string;
   blockedReason?: string;
   roundCount: number;
+  /** 软预算续期次数（撞 maxRounds 后由模型自行决定继续了几次） */
+  extensions?: number;
   inputTokens: number;
   outputTokens: number;
 }
 
 export interface AgentLoopParams {
   messages: ChatMessage[];
+  /** 单次软预算（一轮 grant 的轮数）。撞到后交给模型自行判断是否续期 */
   maxRounds: number;
+  /** 最多续期几次，默认 3 → 实际上限 maxRounds * (1 + maxRounds*maxExtensions) */
+  maxExtensions?: number;
+  /** 绝对上限（轮），默认 maxRounds * (1 + maxExtensions) */
+  hardRounds?: number;
+  /** 墙钟上限 ms，0 = 关闭。默认 45 分钟 */
+  wallClockMs?: number;
+  /** token 预算（in+out），0 = 关闭。默认关闭 */
+  tokenBudget?: number;
+  /** 连续相同工具调用+相同输出达到该轮数 → 提醒模型（默认 3） */
+  noProgressWarn?: number;
+  /** 连续相同工具调用+相同输出达到该轮数 → 强制停（默认 6） */
+  noProgressStop?: number;
   onTurnComplete?: (messages: ChatMessage[], toolCount: number) => void;
   onComplete?: (text: string) => void;
   preRoundCheck?: (messages: ChatMessage[]) => string | null;
@@ -47,6 +62,52 @@ function extractThoughts(response: any): string {
     .filter(b => b.type === 'text').map(b => b.text || '').join(' ').trim();
 }
 
+// ---- 无进展检测 ----
+
+/** 稳定序列化（key 排序），用于给工具参数算指纹 */
+function stableStringify(v: unknown): string {
+  if (v === undefined) return 'undefined';
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
+  const obj = v as Record<string, unknown>;
+  return '{' + Object.keys(obj).sort().map(k => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
+}
+
+/** FNV-1a 32 位，够用且不占内存 */
+function hashStr(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/**
+ * 一轮的指纹：工具名 + 参数 + 输出。三者全同才算「无进展」——
+ * 只比参数会把「轮询等后台 Agent」误判成卡死（输出在变就是有进展）。
+ */
+function roundFingerprint(calls: Array<{ name: string; input: Record<string, unknown>; output: string }>): string {
+  const callPart = calls.map(c => `${c.name}:${stableStringify(c.input)}`).join('|');
+  const outPart = calls.map(c => c.output).join('|');
+  return `${calls.length}|${hashStr(callPart)}|${hashStr(outPart)}`;
+}
+
+function budgetNotice(round: number, granted: number, hardRounds: number, left: number): string {
+  return `[BUDGET] You have used ${round} rounds (current grant: ${granted}). `
+    + `Status check — decide for yourself whether continuing is still productive:\n`
+    + `- If the task is finished, blocked, or you are going in circles → STOP now: reply with a final text answer and NO tool calls.\n`
+    + `- If more rounds are genuinely needed → just make the next tool call.\n`
+    + `Each continuation grants ${granted} more rounds; ${left} continuation(s) left, hard stop at ${hardRounds} rounds.`;
+}
+
+function noProgressNotice(streak: number, calls: Array<{ name: string }>): string {
+  const names = [...new Set(calls.map(c => c.name))].join(', ');
+  return `[NO PROGRESS] The last ${streak} rounds made the identical tool call(s) with identical results: ${names}.\n`
+    + `Repeating this will not change the outcome. Change your approach (different tool, different arguments, `
+    + `narrower scope), or stop and report what is blocking you.`;
+}
+
 async function executeTools(
   engine: AgentEngine,
   response: any,
@@ -63,6 +124,19 @@ async function executeTools(
     const tool = toolMap.get(b.name!);
     let output = '';
     let timedOut = false;
+    if (b._argError) {
+      // 参数不是合法 JSON（openai.ts 容错解析也救不回来）→ 不执行工具，
+      // 把错误当成工具结果回灌给模型，让它下一轮重发合法 JSON。
+      // 这样一次烂参数只浪费一轮，而不是把整个 agentLoop 打成 crashed。
+      output = `Error: tool arguments for "${b.name}" were not valid JSON (${b._argError}). `
+        + `Re-emit this tool call with STRICT JSON: double quotes only, no single quotes, no trailing commas, no comments.\n`
+        + (b._rawArgs ? `You sent: ${b._rawArgs}` : '');
+      if (updateStats) {
+        const summary = tool?.getToolUseSummary?.(b.input || {}) || b.name!;
+        updateStats(b.name!, summary, output);
+      }
+      return { name: b.name!, id: b.id!, input: {}, output };
+    }
     if (tool) {
       try {
         const r = await Promise.race([
@@ -140,31 +214,79 @@ export async function agentLoop(
   let outputTokens = 0;
   let totalToolCount = 0;
 
-  for (let i = 0; i < maxRounds; i++) {
+  // ---- 预算与护栏 ----
+  const maxExtensions = params.maxExtensions ?? 3;
+  const hardRounds = params.hardRounds ?? maxRounds * (1 + maxExtensions);
+  const wallClockMs = params.wallClockMs ?? 45 * 60_000;
+  const tokenBudget = params.tokenBudget ?? 0;
+  const noProgressWarn = params.noProgressWarn ?? 3;
+  const noProgressStop = params.noProgressStop ?? 6;
+
+  const startedAt = Date.now();
+  let softCap = maxRounds;   // 当前这一 grant 的轮数上限
+  let extensions = 0;
+  let round = 0;             // 全局轮序号
+  let prevFp = '';
+  let streak = 0;            // 连续相同指纹的轮数
+
+  const done = (status: LoopResult['status'], text: string, extra?: Partial<LoopResult>): LoopResult => ({
+    status, text, roundCount: round + 1, extensions, inputTokens, outputTokens, ...extra,
+  });
+
+  for (;;) {
+    // ---- 绝对上限 ----
+    if (round >= hardRounds) {
+      return done('max_rounds', `(round budget exhausted: ${round} rounds, ${extensions} extension(s))`, { roundCount: round });
+    }
+    // ---- 成本护栏 ----
+    if (wallClockMs > 0 && Date.now() - startedAt > wallClockMs) {
+      const reason = `wall-clock budget exceeded (${Math.round((Date.now() - startedAt) / 1000)}s after ${round} rounds)`;
+      onComplete?.('(blocked)');
+      return done('blocked', `(blocked: ${reason})`, { blockedReason: reason, roundCount: round });
+    }
+    if (tokenBudget > 0 && inputTokens + outputTokens > tokenBudget) {
+      const reason = `token budget exceeded (${inputTokens + outputTokens} > ${tokenBudget} after ${round} rounds)`;
+      onComplete?.('(blocked)');
+      return done('blocked', `(blocked: ${reason})`, { blockedReason: reason, roundCount: round });
+    }
+
+    // ---- 软预算续期：不问模型「要不要继续」，而是把决定权交给它下一轮的行动 ----
+    // 调工具 = 选择继续；只出文字（end_turn）= 选择收尾。零额外 API 调用。
+    if (round >= softCap) {
+      if (extensions >= maxExtensions) {
+        return done('max_rounds', `(max iterations: ${round} rounds, ${extensions} extension(s) used)`, { roundCount: round });
+      }
+      const left = maxExtensions - extensions;
+      const note = budgetNotice(round, maxRounds, hardRounds, left);
+      messages.push({ role: 'user', content: note });
+      if (!silent) engine.emit({ type: 'notice', kind: 'budget', text: note });
+      softCap = round + maxRounds;
+      extensions++;
+    }
+
+    // ---- 每轮前置检查（注入外部信号） ----
     if (preRoundCheck) {
       const signal = preRoundCheck(messages);
       if (signal) {
         if (signal.startsWith('BLOCKED:') || signal.startsWith('blocked:')) {
           const reason = signal.replace(/^BLOCKED:\s*/i, '');
           onComplete?.('(blocked)');
-          return { status: 'blocked', text: `(blocked: ${reason})`, blockedReason: reason, roundCount: i + 1, inputTokens, outputTokens };
+          return done('blocked', `(blocked: ${reason})`, { blockedReason: reason });
         }
         if (signal === '(killed)' || signal.startsWith('killed')) {
           onComplete?.('(killed)');
-          return { status: 'killed', text: signal, roundCount: i + 1, inputTokens, outputTokens };
+          return done('killed', signal);
         }
         messages.push({ role: 'user', content: `[SIGNAL] ${signal}` });
       }
     }
 
-    onRound?.(i);
-    const lastMsg = messages[messages.length - 1]?.content;
-    const phase = phaseLabel?.(i, lastMsg) ?? 'processing';
+    onRound?.(round);
 
     let response: { content: Array<unknown>; stop_reason: string; usage?: { input_tokens: number; output_tokens: number } };
     try {
       const thinkStart = Date.now();
-      const phase = phaseLabel?.(i, messages[messages.length - 1]?.content) ?? 'processing';
+      const phase = phaseLabel?.(round, messages[messages.length - 1]?.content) ?? 'processing';
       let tick: ReturnType<typeof setInterval> | undefined;
       if (!silent) {
         engine.emit({ type: 'thinking_start', label: phase, time: thinkStart });
@@ -190,7 +312,7 @@ export async function agentLoop(
       if (!silent) engine.emit({ type: 'thinking_end', label: phase, elapsedMs, toolCount, time: Date.now() });
     } catch (e) {
       const errMsg = (e as Error).message || String(e);
-      return { status: 'crashed', text: `LLM call failed: ${errMsg}`, roundCount: i + 1, inputTokens, outputTokens };
+      return done('crashed', `LLM call failed: ${errMsg}`);
     }
 
     if (response.stop_reason === 'end_turn') {
@@ -203,7 +325,7 @@ export async function agentLoop(
       const text = extractText(response);
       onTurnComplete?.(messages, totalToolCount);
       onComplete?.(text);
-      return { status: 'success', text: text || '(done)', roundCount: i + 1, inputTokens, outputTokens };
+      return done('success', text || '(done)');
     }
 
     if (response.stop_reason === 'tool_use') {
@@ -227,9 +349,25 @@ export async function agentLoop(
       const toolResults = await executeTools(engine, response,
         (n, s, o, f) => updateStats?.(n, s, o, f || feedback || undefined), serialTools, silent);
       pushResults(messages, engine, toolResults);
+
+      // ---- 无进展检测：连续相同的 工具+参数+输出 ----
+      const fp = roundFingerprint(toolResults);
+      if (fp === prevFp) streak++; else { streak = 1; prevFp = fp; }
+
+      if (streak >= noProgressStop) {
+        const reason = `no progress: identical tool call(s) and results ${streak} rounds in a row`;
+        onComplete?.('(blocked)');
+        return done('blocked', `(blocked: ${reason})`, { blockedReason: reason });
+      }
+      if (streak === noProgressWarn) {
+        const note = noProgressNotice(streak, toolResults);
+        messages.push({ role: 'user', content: note });
+        if (!silent) engine.emit({ type: 'notice', kind: 'no-progress', text: note });
+      }
     } else {
-      return { status: 'crashed', text: `Unexpected stop_reason: ${response.stop_reason}`, roundCount: i + 1, inputTokens, outputTokens };
+      return done('crashed', `Unexpected stop_reason: ${response.stop_reason}`);
     }
+
+    round++;
   }
-  return { status: 'max_rounds', text: '(max iterations)', roundCount: maxRounds, inputTokens, outputTokens };
 }

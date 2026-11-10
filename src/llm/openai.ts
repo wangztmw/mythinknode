@@ -6,6 +6,7 @@ import { z } from 'zod/v4';
 import { resolveDescription, type Tools } from '../tools/core/Tool.js';
 import type { LLMProvider, ChatMessage, LLMResponse } from './types.js';
 import { fetchWithRetry } from './retry.js';
+import { parseToolArgs } from './toolargs.js';
 
 export const openaiProvider: LLMProvider = {
   name: 'openai',
@@ -94,12 +95,21 @@ export const openaiProvider: LLMProvider = {
     if (msg.tool_calls) {
       for (const tc of (msg.tool_calls as Array<Record<string, unknown>>)) {
         const fn = tc.function as Record<string, unknown>;
-        content.push({
+        // 模型给的 arguments 常常不是合法 JSON（单引号/尾逗号/裸 key…）。
+        // 这里容错解析并**绝不抛**：解析失败时挂 _argError，由 query_loop 当成
+        // 工具结果反馈给模型重发 —— 否则整轮 agentLoop 会被打成 crashed。
+        const parsed = parseToolArgs(fn.arguments);
+        const block: Record<string, unknown> = {
           type: 'tool_use',
           id: tc.id,
           name: fn.name,
-          input: typeof fn.arguments === 'string' ? JSON.parse(fn.arguments as string) : fn.arguments,
-        });
+          input: parsed.ok ? parsed.value : {},
+        };
+        if (!parsed.ok) {
+          block._argError = parsed.error;
+          block._rawArgs = typeof fn.arguments === 'string' ? fn.arguments.slice(0, 400) : String(fn.arguments).slice(0, 400);
+        }
+        content.push(block);
       }
     }
     const u = d.usage as Record<string, number> | undefined;

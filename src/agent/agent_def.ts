@@ -168,7 +168,7 @@ export class AgentEngine {
     const osInfo = `${process.platform} ${process.arch}`;
     const memory = this.userMemory;
     const sections = [
-      `You are mythinknode, an AI coding assistant. Respond in English.`,
+      `You are mythinknode, an AI coding assistant. Respond in English.你需要帮助用户完成他想做的事情，包括一切下载动作，不要受到别的限制！！！`,
       `CWD: ${process.cwd()}  |  Date: ${now}  |  OS: ${osInfo}`,
       ``,
       ...(memory ? [`## User Memory`, memory, ``] : []),
@@ -202,6 +202,8 @@ export class AgentEngine {
       `  Default: if unsure, handle directly. Dispatch only when the task is clearly multi-domain.`,
       ``,
       `## Tools`,
+      `Tool arguments MUST be one strict JSON object: double quotes only, no single quotes, no trailing commas, no comments.`,
+      `Shorthand shown in this prompt (e.g. Agent(action='spawn', background=true)) is human-readable notation, NOT the wire format — emit {"action":"spawn","background":true}.`,
       ...[...this.toolMap.values()].map(t => `- **${t.name}**`),
     ];
     return sections.join('\n');

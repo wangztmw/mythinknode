@@ -59,8 +59,8 @@ Less valuable to tag (but still OK if you found it notable):
 
 ## Example
 
-Remember(action='tag',
-  title='CDP connect requires browser warm-up',
-  note='chrome --remote-debugging-port=9222 connection rejected → Chrome launched without remote debugging enabled AND site uses behavior-based bot detection → must launch with: chrome --remote-debugging-port=9222 --user-data-dir=./profile. Then manually browse target site ≥2min before connecting. Without warm-up, even correct launch flags fail.',
-  keywords=['puppeteer','anti-crawl','cdp','chrome'],
-  fields={command:'chrome --remote-debugging-port=9222 --user-data-dir=./profile', warmup:'≥2min manual browsing', error:'connection rejected + bot detection'})`;
+Arguments are ALWAYS strict JSON — double quotes only, no single quotes, no trailing commas:
+
+{"action":"tag","title":"CDP connect requires browser warm-up","note":"chrome --remote-debugging-port=9222 connection rejected → Chrome launched without remote debugging enabled AND site uses behavior-based bot detection → must launch with: chrome --remote-debugging-port=9222 --user-data-dir=./profile. Then manually browse target site ≥2min before connecting. Without warm-up, even correct launch flags fail.","keywords":["puppeteer","anti-crawl","cdp","chrome"],"fields":{"command":"chrome --remote-debugging-port=9222 --user-data-dir=./profile","warmup":"≥2min manual browsing","error":"connection rejected + bot detection"}}
+
+Note: shorthand like Remember(action="tag", ...) used elsewhere in the prompt is human-readable notation only — the wire format is the JSON object above.`;

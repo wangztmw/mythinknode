@@ -26,13 +26,28 @@ export const anthropicProvider: LLMProvider = {
   },
 
   async call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string, maxTokens?: number): Promise<LLMResponse> {
+    // 只保留 API 认识的字段：tool_use 块里可能带有内部标记（如 _argError/_rawArgs），
+    // Anthropic 对未知字段是严格的，跨 provider 切换时会 400。
+    const clean = (content: unknown): unknown => {
+      if (typeof content === 'string' || !Array.isArray(content)) return content;
+      return content.map(b => {
+        const blk = b as Record<string, unknown>;
+        if (blk && blk.type === 'tool_use') {
+          return { type: 'tool_use', id: blk.id, name: blk.name, input: blk.input ?? {} };
+        }
+        if (blk && blk.type === 'tool_result') {
+          return { type: 'tool_result', tool_use_id: blk.tool_use_id, content: blk.content };
+        }
+        return b;
+      });
+    };
     const body: Record<string, unknown> = {
       model,
       max_tokens: maxTokens ?? 384000,
       system: systemPrompt,
       messages: messages
         .filter(m => m.role === 'user' || m.role === 'assistant')
-        .map(m => ({ role: m.role, content: m.content })),
+        .map(m => ({ role: m.role, content: clean(m.content) })),
       tools,
     };
     const { status, ok, text } = await fetchWithRetry('https://api.anthropic.com/v1/messages', {

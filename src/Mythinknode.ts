@@ -195,25 +195,46 @@ async function main() {
     }
     if (!line) continue;
 
-    cli.setBusy(true);
-    const stopRender = cli.startRender(engine);
-    let result: Awaited<ReturnType<typeof runSession>>;
+    // ⚠️ 这一段必须整体被 try 包住。TUI 的按键总开关是 store.waiting：
+    // readLine() 置 true，submit() 置 false。只要某一轮抛出异常逃出 while，
+    // 主循环就永久停在 submit() 之后 → waiting 永远是 false →
+    // SessionApp 的 `if (!state.waiting) return` 吞掉所有按键 →
+    // 「进程还活着、Ctrl+C 还能退，但打不了字」。而 console.error 写在流式输出中，
+    // 会被 ink 的增量重绘覆盖掉，用户看不到任何错误提示。所以这里宁可丢掉一轮，
+    // 也不能丢掉整个会话。
+    let stopRender: (() => void) | null = null;
     try {
-      result = await runSession(engine, session, line);
-    } catch (e) {
+      cli.setBusy(true);
+      stopRender = cli.startRender(engine);
+      const result = await runSession(engine, session, line);
+      // 先停渲染，再输出结果。推式事件下 runSession resolve 后不会再有 emit，
+      // stopRender 只是安全网：刷掉最后的 pendingTick + 退订，保证结果渲染与进度事件原子。
       stopRender();
-      cli.setBusy(false);
-      cli.renderError((e as Error).message || String(e));
-      session.save();
-      continue;
+      stopRender = null;
+      cli.renderResult(result.text, result.ms, result.inputTokens, result.outputTokens);
+    } catch (e) {
+      try { stopRender?.(); } catch { /* 退订失败不影响恢复 */ }
+      try { cli.renderError((e as Error).message || String(e)); } catch { /* 渲染失败也要继续 */ }
+    } finally {
+      // 无论如何都要放开输入，否则就是「进程活着但键盘失灵」。
+      try { cli.setBusy(false); } catch { /* 忽略 */ }
+      try { session.save(); } catch (e) { console.error('[session] save failed:', (e as Error).message); }
     }
-    // 先停渲染，再输出结果。推式事件下 runSession resolve 后不会再有 emit，
-    // stopRender 只是安全网：刷掉最后的 pendingTick + 退订，保证结果渲染与进度事件原子。
-    stopRender();
-    cli.renderResult(result.text, result.ms, result.inputTokens, result.outputTokens);
-    cli.setBusy(false);
-    session.save();
   }
 }
 
-main().catch(console.error);
+// 走到这里说明初始化或主循环结构本身崩了。注意两点：
+//   1. 外层一旦 reject，while(true) 就再也不会回到 readLine()，TUI 的 input 总开关
+//      （store.waiting）永久停在 false —— 进程还活着（ink 持有 stdin raw-mode 监听），
+//      但所有按键被 SessionApp 的 `if (!state.waiting) return` 静默吞掉。
+//   2. ink 在增量渲染中，此时 console.error 的输出会被后续重绘覆盖，用户看不到。
+// 所以必须显式还原终端 + 明确打一行错误 + 退出，而不是让进程假装还活着。
+main().catch((e: unknown) => {
+  const msg = (e as Error)?.message || String(e);
+  try { process.stdin.setRawMode?.(false); } catch { /* 忽略 */ }
+  try {
+    // \x1b[0m 复位属性，\x1b[?25h 恢复光标（raw mode 异常退出时可能被隐藏）
+    process.stderr.write(`\x1b[0m\x1b[?25h\nmythinknode crashed: ${msg}\n`);
+  } catch { /* 忽略 */ }
+  process.exit(1);
+});

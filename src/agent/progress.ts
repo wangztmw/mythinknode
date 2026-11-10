@@ -38,4 +38,6 @@ export type ProgressEvent =
   | { type: 'thinking_end'; label: string; elapsedMs: number; toolCount: number; time: number }
   | { type: 'tool_display'; calls: MergedTool[]; elapsedMs?: number }
   | { type: 'thought'; text: string }
+  /** 循环自检提示（预算续期 / 检测到无进展） */
+  | { type: 'notice'; kind: 'budget' | 'no-progress'; text: string }
   | { type: 'error'; message: string };

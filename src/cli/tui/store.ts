@@ -121,13 +121,19 @@ export class TuiStore {
     const text = this.state.input;
     if (!text.trim() || !this.resolveLine) return;
     const resolve = this.resolveLine;
+    // 先摘掉 resolveLine：即使下面渲染抛异常，也不会出现「await 被两份 resolve」。
     this.resolveLine = null;
-
-    this.history.push(text);
-    this.historyIdx = -1;
-    this.update({ waiting: false, input: '', cursor: 0, status: null });
-    this.appendBlock('user', text);
-    resolve(text);
+    try {
+      this.history.push(text);
+      this.historyIdx = -1;
+      this.update({ waiting: false, input: '', cursor: 0, status: null });
+      this.appendBlock('user', text);
+    } finally {
+      // ⚠️ resolve 必须无条件执行：它是主循环 `await cli.readLine()` 的唯一唤醒源。
+      // 渲染/日志抛异常时若不 resolve，主循环就永久挂起，waiting 停在 false，
+      // 表现为「终端还能动但打不了字」（与主循环逃逸是同一个症状）。
+      resolve(text);
+    }
   }
 
   // ---- 行编辑 ----
