@@ -17,7 +17,8 @@ import type { ScreenStateLike, InputDriver } from '../render/types.js';
  * 也可能把一个转义序列拆成多个 chunk（\x1b 和 [D 分开）。若不按单元切分，
  * 合并的箭头键会被当普通文本、拆开的鼠标事件会污染输入（光标/删除键异常）。
  */
-function extractUnit(s: string): string | null {
+/** 从待处理缓冲里切出一个可处理单元（普通文本段 / 完整转义序列）。导出供回归测试。 */
+export function extractUnit(s: string): string | null {
   if (s[0] !== '\x1b') {
     let i = 0;
     while (i < s.length && s[i] !== '\x1b') i++;
@@ -34,6 +35,24 @@ function extractUnit(s: string): string | null {
     return null;  // 不完整，等后续
   }
   return s.slice(0, 2);  // 两字节转义（如 \x1bM）
+}
+
+/**
+ * 把「文字 + 结尾回车」拆成两段。
+ *
+ * 为什么需要：一次 stdin read 里同时拿到「文字\r」很常见（打字快、粘贴后立刻回车、
+ * 慢链路上字节合并）。整段交给 applyChunk 时 chunk !== '\r'，会走「普通输入」分支，
+ * 回车被当成**内容换行**塞进缓冲区 —— 表现为「按了回车却没提交」，
+ * 输入框里还多一个看不见的换行。
+ *
+ * 只拆结尾这一个：段中间的 \r 仍按多行粘贴的内容处理
+ * （见 test-suite「粘贴多行」用例）。
+ */
+export function splitTrailingNewline(unit: string): { body: string; newline: string } {
+  if (unit.length > 1 && (unit.endsWith('\r') || unit.endsWith('\n'))) {
+    return { body: unit.slice(0, -1), newline: unit.slice(-1) };
+  }
+  return { body: unit, newline: '' };
 }
 
 export function createInputBuffer(ss: ScreenStateLike, driver: InputDriver) {
@@ -99,7 +118,11 @@ export function createInputBuffer(ss: ScreenStateLike, driver: InputDriver) {
       const unit = extractUnit(pending);
       if (unit === null) break;   // 残缺转义序列，等后续 chunk 拼齐
       pending = pending.slice(unit.length);
-      handleUnit(unit);
+      // 文字段结尾的回车要单独喂：否则回车会被当成内容换行，提交被吞掉。
+      const { body, newline } = splitTrailingNewline(unit);
+      if (body) handleUnit(body);
+      if (closed) return;
+      if (newline) handleUnit(newline);
       if (closed) return;
     }
   });

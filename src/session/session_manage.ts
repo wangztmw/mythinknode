@@ -40,6 +40,34 @@ function sanitizeTitle(text: string, maxLen: number): string {
 }
 
 /**
+ * 本地即时命名素材 —— 零 LLM 调用。
+ *
+ * 取第一行非空文本清洗成短语；英文按 `-` 词边界切，避免截出半个单词。
+ * 中文没有空格，sanitizeTitle 后是整段，直接按长度截断。
+ */
+function localIntent(text: string, maxLen: number): string {
+  const firstLine = text
+    .replace(/\r/g, '')
+    .split('\n')
+    .map(l => l.trim())
+    .find(l => l.length > 0) ?? '';
+  if (!firstLine) return '';
+
+  const cleaned = sanitizeTitle(firstLine, maxLen * 4);
+  if (!cleaned) return '';
+  if (cleaned.length <= maxLen) return cleaned;
+
+  // 按 - 逐词累积，尽量不在词中间切；一个词就超长（无空格中文）时退回硬截断
+  let out = '';
+  for (const part of cleaned.split('-')) {
+    const next = out ? `${out}-${part}` : part;
+    if (next.length > maxLen) break;
+    out = next;
+  }
+  return out || cleaned.slice(0, maxLen);
+}
+
+/**
  * 判断一条消息是否是用户真实输入。
  * 注入的检索结果/通知都以 "[" 开头（[S1] / [NODE MIND] / [TRAIT GRAPH] / [Agent ...]），
  * 不能当作意图素材。
@@ -63,6 +91,12 @@ export class Session {
   firstUserMessage?: string;
   /** 会话基础名（时间前缀 + 第一句话意图），尾缀每次 summarize 时替换 */
   baseName?: string;
+  /**
+   * 基础名来源：
+   *   provisional —— 首条消息到达时本地即时生成（零 LLM 调用），可能待精修
+   *   llm         —— LLM 提炼过，视为终态，不再改名
+   */
+  baseNameSource?: 'provisional' | 'llm';
 
   constructor(id: string, startedAt?: number) {
     this.id = id;
@@ -113,7 +147,9 @@ export class Session {
       const path = sessionPath(lock.id);
       if (existsSync(path)) {
         const data = JSON.parse(readFileSync(path, 'utf-8'));
-        const s = new Session(data.id, data.startedAt);
+        // 以目录名（== lock.id）为准，而不是 data.id：路径都是从目录名推出来的，
+        // 历史文件里的 id 字段可能因为改名/旧版本而滞后。
+        const s = new Session(lock.id, data.startedAt);
         s.messages = (data.messages as ChatMessage[]).filter(m => !(m.role === 'assistant' && Array.isArray(m.content) && m.content.length === 0));
         s.toolCount = data.toolCount || 0;
         s.cumulativeTokens = data.cumulativeTokens || 0;
@@ -122,6 +158,10 @@ export class Session {
         s.keywordIndex = loadKeywords(data.id);
         s.firstUserMessage = typeof data.firstUserMessage === 'string' ? data.firstUserMessage : s.messages.find(isUserIntent)?.content;
         s.baseName = typeof data.baseName === 'string' ? data.baseName : undefined;
+        // 老会话没有 baseNameSource 字段：已有 baseName 的一定是旧 summarize 用 LLM 生成的 → 视为终态
+        s.baseNameSource = data.baseNameSource === 'provisional'
+          ? 'provisional'
+          : (typeof s.baseName === 'string' ? 'llm' : undefined);
         return s;
       }
       return null;
@@ -155,7 +195,8 @@ export class Session {
       const path = sessionPath(id);
       if (!existsSync(path)) return null;
       const data = JSON.parse(readFileSync(path, 'utf-8'));
-      const s = new Session(data.id, data.startedAt);
+      // 同理：目录名是权威 id（loadById 的入参就是目录名）
+      const s = new Session(id, data.startedAt);
       s.messages = (data.messages as ChatMessage[]).filter(m => !(m.role === 'assistant' && Array.isArray(m.content) && m.content.length === 0));
       s.toolCount = data.toolCount || 0;
       s.cumulativeTokens = data.cumulativeTokens || 0;
@@ -164,6 +205,10 @@ export class Session {
       s.keywordIndex = loadKeywords(data.id);
       s.firstUserMessage = typeof data.firstUserMessage === 'string' ? data.firstUserMessage : s.messages.find(isUserIntent)?.content;
       s.baseName = typeof data.baseName === 'string' ? data.baseName : undefined;
+      // 老会话没有 baseNameSource 字段：已有 baseName 的一定是旧 summarize 用 LLM 生成的 → 视为终态
+      s.baseNameSource = data.baseNameSource === 'provisional'
+        ? 'provisional'
+        : (typeof s.baseName === 'string' ? 'llm' : undefined);
       return s;
     } catch { return null; }
   }
@@ -221,16 +266,90 @@ export class Session {
     for (let n = 2; existsSync(sessionDir(target)) && target !== this.id; n++) {
       target = `${name}-${n}`;
     }
-    const oldDir = sessionDir(this.id);
+    const prevId = this.id;
+    const oldDir = sessionDir(prevId);
     if (!existsSync(oldDir)) {
       this.id = target;
+      this.syncLock(prevId);
       return;
     }
     try {
       mkdirSync(SESSIONS_DIR, { recursive: true });
       renameSync(oldDir, sessionDir(target));
       this.id = target;
+      this.syncLock(prevId);
+      // 目录名变了，session.json 里的 id 字段也要跟着改。
+      // 否则下次 load() 拿到旧 id，会去按旧目录名找路径 —— 找不到会返回 null，
+      // 找到（或重建）则产生一个 id 与目录名不一致的重复会话。
+      this.rewritePersistedId();
     } catch { /* 重命名失败：保留原 id，下次再试 */ }
+  }
+
+  /** 把 session.json 里的 id 同步为当前 this.id（文件不存在则跳过） */
+  private rewritePersistedId(): void {
+    try {
+      const path = sessionPath(this.id);
+      if (!existsSync(path)) return;
+      const data = JSON.parse(readFileSync(path, 'utf-8'));
+      if (data?.id === this.id) return;
+      writeFileSync(path, JSON.stringify({ ...data, id: this.id }, null, 2));
+    } catch { /* id 重写失败不影响主流程，load 侧也有兜底 */ }
+  }
+
+  /**
+   * 锁文件里记的是会话 id。目录改名后必须同步，否则 `hasUnfinished()` / `load()`
+   * 按旧 id 找目录会落空 —— 表现就是「上次没退干净的会话不被识别」。
+   * 只在锁确实属于本会话（id === prevId）时才改写，避免动到别人的锁。
+   */
+  private syncLock(prevId: string): void {
+    try {
+      if (!existsSync(LOCK_FILE)) return;
+      const lock = JSON.parse(readFileSync(LOCK_FILE, 'utf-8'));
+      if (lock?.id !== prevId) return;
+      writeFileSync(LOCK_FILE, JSON.stringify({ ...lock, id: this.id }));
+    } catch { /* 锁同步失败不影响主流程 */ }
+  }
+
+  /**
+   * 即时命名（零 LLM 调用）：首条用户消息一到就调用，让会话目录立刻可读。
+   * 已有名字时不做任何事。返回是否发生了重命名。
+   *
+   * 为什么不等退出再命名：退出命名依赖一次 LLM 调用 + 一次目录 rename，
+   * 任何一步失败（离线、本地服务已停、终端被 kill）会话就永远停在时间戳名字上。
+   *
+   * @param text 首条用户输入。主循环在 runSession 之前调用，此时 messages 还是空的，
+   *             必须显式传入，不能只依赖 firstUserMessage。
+   */
+  provisionalBaseName(text?: string): boolean {
+    if (this.baseName) return false;
+    const first = text ?? this.firstUserMessage ?? this.messages.find(isUserIntent)?.content;
+    if (!first) return false;
+    const intent = localIntent(first, 12);
+    if (!intent) return false;
+    this.firstUserMessage ??= first;
+    this.baseName = `${timePrefix(this.startedAt)}-${intent}`;
+    this.baseNameSource = 'provisional';
+    this.renameTo(this.baseName);
+    return true;
+  }
+
+  /**
+   * LLM 精修基础名：把 provisional 名字升级成 LLM 提炼的版本。
+   * 已是 llm 终态时直接返回；失败保留现有名字（绝不回退成时间戳 id）。
+   */
+  async ensureBaseName(
+    llm: { chat: (msgs: ChatMessage[], prompt?: string) => Promise<{ content: unknown[]; stop_reason: string }> },
+  ): Promise<void> {
+    if (this.baseNameSource === 'llm') return;
+    const first = this.firstUserMessage ?? this.messages.find(isUserIntent)?.content;
+    if (!first) return;
+    try {
+      const intent = await this.extractIntent(llm, [first], BASE_INTENT_PROMPT, 12);
+      if (!intent) return;
+      this.baseName = `${timePrefix(this.startedAt)}-${intent}`;
+      this.baseNameSource = 'llm';
+      this.renameTo(this.baseName);
+    } catch { /* 保留现有名字 */ }
   }
 
   /**
@@ -240,13 +359,8 @@ export class Session {
    */
   async summarize(llm: { chat: (msgs: ChatMessage[], prompt?: string) => Promise<{ content: unknown[]; stop_reason: string }> }): Promise<void> {
     try {
-      if (!this.baseName) {
-        const first = this.firstUserMessage ?? this.messages.find(isUserIntent)?.content;
-        if (!first) return; // 没有用户输入（如恢复的空会话），保持原 id
-        const intent = await this.extractIntent(llm, [first], BASE_INTENT_PROMPT, 12);
-        if (!intent) return;
-        this.baseName = `${timePrefix(this.startedAt)}-${intent}`;
-      }
+      await this.ensureBaseName(llm);
+      if (!this.baseName) return; // 没有用户输入（如恢复的空会话），保持原 id
 
       // 最近 5 条真实用户输入（从后往前取，保持时间顺序）
       const recent: string[] = [];
@@ -276,6 +390,7 @@ export class Session {
       pendingNotifications: this.pendingNotifications,
       firstUserMessage: this.firstUserMessage,
       baseName: this.baseName,
+      baseNameSource: this.baseNameSource,
     }, null, 2));
     // 关键词索引独立存盘（session.json 字段不动）
     saveKeywords(this.id, this.keywordIndex);

@@ -8,9 +8,11 @@
 import React from 'react';
 import { render } from 'ink';
 import type { ProgressEvent } from '../../agent/progress.js';
-import { TuiStore } from './store.js';
+import { TuiStore, type LogKind, type LogMeta } from './store.js';
 import { SessionApp } from './SessionApp.js';
 import { collectSnapshot } from './data.js';
+import { historyToBlocks } from '../../session/session_history.js';
+import type { ChatMessage } from '../../llm/types.js';
 import { sanitizeOutput } from './text/sanitize.js';
 import { buildPreview } from './text/preview.js';
 import {
@@ -192,6 +194,29 @@ export function createTuiCLI() {
         return;
       }
       store.append('system', sanitizeOutput(text));
+    },
+
+    /**
+     * 恢复会话时重放历史对话：用户发言 + assistant 文本 + 工具名。
+     * 重放规则与 classic 版共用 historyToBlocks()，这里只做 store 写入。
+     */
+    restoreHistory(messages: ChatMessage[]): void {
+      const blocks = historyToBlocks(messages);
+      if (blocks.length === 0) return;
+      const items: Array<{ kind: LogKind; text: string; meta?: LogMeta }> = [
+        { kind: 'system', text: '── 历史对话 ──' },
+      ];
+      for (const block of blocks) {
+        if (block.kind === 'user') {
+          items.push({ kind: 'user', text: sanitizeOutput(block.text) });
+        } else if (block.kind === 'md') {
+          items.push({ kind: 'md', text: sanitizeOutput(block.text) });
+        } else {
+          items.push({ kind: 'tool', text: block.text, meta: { name: block.text, args: '' } });
+        }
+      }
+      items.push({ kind: 'system', text: '── 以上为历史，以下继续 ──' });
+      store.appendBatch(items);
     },
 
     close(): void {

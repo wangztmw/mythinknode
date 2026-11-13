@@ -78,7 +78,7 @@ async function main() {
   }
 
   const sessionId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const session = new Session(sessionId);
+  let session = new Session(sessionId);
 
   const { setSearchLLM } = await import('./nodemind/nodeMind_manage.js');
   const { setInfermemLLM } = await import('./infermem/ingest.js');
@@ -111,16 +111,16 @@ async function main() {
     shutdownLocalServer();
   });
 
+  let resumed = false;
   if (shouldResume) {
     const picked = await Session.pickSession();
-    if (picked) {
-      session.id = picked.id;
-      session.startedAt = picked.startedAt;
-      session.messages = picked.messages;
-      session.toolCount = picked.toolCount;
-      session.cumulativeTokens = picked.cumulativeTokens;
-      session.tokenMarkers = picked.tokenMarkers;
-      session.pendingNotifications = picked.pendingNotifications;
+    // 整体接管，而不是逐字段拷贝 —— 逐字段很容易漏（firstUserMessage / baseName /
+    // keywordIndex 漏掉会导致恢复后名字被重算、历史检索索引丢失）。
+    if (picked) { session = picked; resumed = true; }
+    // 老会话（升级前创建的）没有 baseName：用已有的第一句话补一个即时名字，
+    // 让它在会话列表里立刻可辨认，不必等到下次 /exit。
+    if (resumed && !session.baseName) {
+      try { session.provisionalBaseName(); } catch { /* 命名失败不影响恢复 */ }
     }
   }
 
@@ -154,6 +154,19 @@ async function main() {
     `Config: ~/.mythinknode/config.json  |  Memory: ~/.mythinknode/MYTHINKNODE.md\n` +
     `Type /help for commands, /exit to quit\n`
   );
+
+  // 恢复会话时重放历史对话。
+  // 只把 messages 塞回 LLM 上下文是不够的 —— 用户需要看见「上次聊到哪儿」，
+  // 否则恢复后屏幕上是一片空白，和开新会话没有区别。
+  // 必须在 banner 之后、第一次 readLine 之前，否则重放行会被 banner 盖掉。
+  if (resumed) {
+    try {
+      cli.restoreHistory(session.messages);
+    } catch (e) {
+      // 重放失败不能影响恢复本身（历史仍在 session.messages 里，LLM 上下文照常）
+      try { cli.renderError(`历史重放失败: ${(e as Error).message}`); } catch { /* 忽略 */ }
+    }
+  }
 
   while (true) {
     const line = await cli.readLine();
@@ -194,6 +207,15 @@ async function main() {
       continue;
     }
     if (!line) continue;
+
+    // 即时命名（零 LLM 调用）：首条消息一到就把目录名从时间戳换成意图短语。
+    // 之前只在 /exit 时靠 LLM 命名，一旦终端被 kill 或 LLM 不可用，
+    // 会话就永远停在 2026-11-10T02-16-44 这种无法辨认的名字上。
+    if (!session.baseName) {
+      try {
+        if (session.provisionalBaseName(line)) session.save();
+      } catch { /* 命名失败不影响对话 */ }
+    }
 
     // ⚠️ 这一段必须整体被 try 包住。TUI 的按键总开关是 store.waiting：
     // readLine() 置 true，submit() 置 false。只要某一轮抛出异常逃出 while，

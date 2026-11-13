@@ -8,12 +8,14 @@
  * 两个模式（AltScreenState / MainScreenState）+ 输入驱动（driver）独立成模块，
  * 本文件只做选择 + 接线，不混入模式逻辑。
  */
-import { C, B, b, c } from './render/ansi.js';
+import { C, B, b, c, mdToANSI } from './render/ansi.js';
 import { AltScreenState, createAltDriver } from './render/screen-state-alt.js';
 import { MainScreenState, createMainDriver } from './render/screen-state-main.js';
 import type { ScreenStateLike, InputDriver } from './render/types.js';
 import { createRenderer } from './render/renderer.js';
 import { createInputBuffer } from './input/input-buffer.js';
+import { historyToBlocks } from '../session/session_history.js';
+import type { ChatMessage } from '../llm/types.js';
 
 export function createCLI() {
   const PROMPT = `${C}${B}mythinknode${b}${c} ${B}>>>${b} `;
@@ -49,6 +51,24 @@ export function createCLI() {
     showHelp: renderer.showHelp,
     // 备用屏启动后，banner 也要进 grid（否则 console.log 写主屏会被隐藏）
     writeLines: (text: string) => ss.writeLines(text),
+
+    /**
+     * 恢复会话时重放历史对话。与 TUI 版共用 historyToBlocks() 的重放规则，
+     * 只是这里直接写行（不走 Ink）。
+     */
+    restoreHistory: (messages: ChatMessage[]) => {
+      const blocks = historyToBlocks(messages);
+      if (blocks.length === 0) return;
+      const lines: string[] = ['', `${C}── 历史对话 ──${c}`];
+      for (const block of blocks) {
+        if (block.kind === 'user') lines.push(`${C}${B}> ${block.text}${b}${c}`);
+        else if (block.kind === 'md') lines.push(mdToANSI(block.text));
+        else lines.push(`  ${C}⏺ ${block.text}${c}`);
+      }
+      lines.push(`${C}── 以上为历史，以下继续 ──${c}`, '');
+      ss.writeLines(lines.join('\n'));
+    },
+
     close: input.close,
   };
 }
