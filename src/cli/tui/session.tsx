@@ -11,6 +11,7 @@ import type { ProgressEvent } from '../../agent/progress.js';
 import { TuiStore, type LogKind, type LogMeta } from './store.js';
 import { SessionApp } from './SessionApp.js';
 import { collectSnapshot } from './data.js';
+import { WindowSizeProvider } from './layout/window-size.js';
 import { historyToBlocks } from '../../session/session_history.js';
 import type { ChatMessage } from '../../llm/types.js';
 import { sanitizeOutput } from './text/sanitize.js';
@@ -62,10 +63,18 @@ export function createTuiCLI() {
     });
   } catch { /* 欢迎框失败不应阻止启动 */ }
 
-  const instance = render(<SessionApp store={store} />, {
-    exitOnCtrlC: false,       // Ctrl+C 由 SessionApp 统一处理（保留退出前清理）
-    incrementalRendering: true, // 只重绘变化行：长输入/高频输入时显著降低终端写入压力
-  });
+  // provider 必须包在 render 的根位置（SessionApp 自己要用尺寸）。
+  // 这里同时也保证 <Static> 里每条日志项（ToolLine/MarkdownBlock/…）都从
+  // context 读尺寸，而不是各自挂 resize 监听器。
+  const instance = render(
+    <WindowSizeProvider>
+      <SessionApp store={store} />
+    </WindowSizeProvider>,
+    {
+      exitOnCtrlC: false,       // Ctrl+C 由 SessionApp 统一处理（保留退出前清理）
+      incrementalRendering: true, // 只重绘变化行：长输入/高频输入时显著降低终端写入压力
+    },
+  );
 
   // 主循环启动时会调用一次 writeLines 打印 banner；TUI 已有欢迎框，跳过它。
   let bannerSkipped = false;

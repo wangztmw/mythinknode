@@ -5,7 +5,8 @@
  * 代码块保留原始换行；表格在窄屏降级为 key-value。
  */
 import React, { useMemo } from 'react';
-import { Box, Text, useWindowSize } from 'ink';
+import { Box, Text } from 'ink';
+import { useTerminalSize } from '../layout/window-size.js';
 import { colors } from '../theme.js';
 import { displayWidth, graphemes, truncateToWidth } from '../text/width.js';
 import { parseMarkdown, preferredWrapMode, type MdBlock, type MdListItem } from './markdown-parse.js';
@@ -184,7 +185,7 @@ function ListItem({ item, contentWidth }: { item: MdListItem; contentWidth: numb
 }
 
 export function MarkdownBlock({ text, columns: columnsProp }: { text: string; columns?: number }) {
-  const { columns: terminalColumns } = useWindowSize();
+  const { columns: terminalColumns } = useTerminalSize();
   const columns = columnsProp ?? terminalColumns;
   const contentWidth = Math.max(10, columns - 2);
   const blocks = useMemo(() => parseMarkdown(text), [text]);

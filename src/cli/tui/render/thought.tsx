@@ -2,7 +2,8 @@
  * thought 块 — 生产端给语义上限，这里按当前宽度折叠为可视行。
  */
 import React from 'react';
-import { Text, useWindowSize } from 'ink';
+import { Text } from 'ink';
+import { useTerminalSize } from '../layout/window-size.js';
 import { colors } from '../theme.js';
 import { THOUGHT_VISIBLE_LINES } from '../layout/limits.js';
 import { wrapLines } from '../text/wrap.js';
@@ -10,7 +11,7 @@ import { truncateToWidth } from '../text/width.js';
 import type { LogItem } from '../store.js';
 
 export function ThoughtBlock({ item }: { item: LogItem }) {
-  const { columns } = useWindowSize();
+  const { columns } = useTerminalSize();
   const contentWidth = Math.max(10, columns - 2);
   const lines = wrapLines(item.text, contentWidth);
   const visible = lines.slice(0, THOUGHT_VISIBLE_LINES);

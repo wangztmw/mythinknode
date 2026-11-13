@@ -4,12 +4,13 @@
  */
 import React, { useSyncExternalStore } from 'react';
 import { appendFileSync } from 'node:fs';
-import { Box, Static, Text, useCursor, useInput, usePaste, useWindowSize } from 'ink';
+import { Box, Static, Text, useCursor, useInput, usePaste } from 'ink';
 import { TuiStore, type LogItem } from './store.js';
 import { colors } from './theme.js';
 import { getBreakpoint } from './layout/breakpoints.js';
 import { computeInputGeometry } from './layout/geometry.js';
 import { hintText, inputLines } from './layout/limits.js';
+import { useTerminalSize } from './layout/window-size.js';
 import { cursorLineColumn, wrapLines } from './text/wrap.js';
 import { truncateToWidth } from './text/width.js';
 import { ErrorBoundary } from './render/ErrorBoundary.js';
@@ -120,7 +121,7 @@ function computeInputView(
 }
 
 function InputBox({ value, cursor }: { value: string; cursor: number }) {
-  const { columns, rows } = useWindowSize();
+  const { columns, rows } = useTerminalSize();
   const bp = getBreakpoint(columns, rows);
   const geometry = computeInputGeometry(columns, bp);
   const view = computeInputView(value, cursor, geometry.textWidth, rows);

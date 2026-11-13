@@ -3,7 +3,8 @@
  * 生产端提供 preview 文本 + totalLines/shownLines 元数据。
  */
 import React from 'react';
-import { Box, Text, useWindowSize } from 'ink';
+import { Box, Text } from 'ink';
+import { useTerminalSize } from '../layout/window-size.js';
 import { colors } from '../theme.js';
 import { getBreakpoint } from '../layout/breakpoints.js';
 import { toolVisibleLines } from '../layout/limits.js';
@@ -12,7 +13,7 @@ import { displayWidth, truncateToWidth } from '../text/width.js';
 import type { LogItem } from '../store.js';
 
 export function ToolLine({ item }: { item: LogItem }) {
-  const { columns } = useWindowSize();
+  const { columns } = useTerminalSize();
   const name = String(item.meta?.name ?? item.text);
   const args = String(item.meta?.args ?? '');
   const budget = Math.max(4, columns - displayWidth(name) - 6);
@@ -28,7 +29,7 @@ export function ToolLine({ item }: { item: LogItem }) {
 }
 
 export function ToolResult({ item }: { item: LogItem }) {
-  const { columns, rows } = useWindowSize();
+  const { columns, rows } = useTerminalSize();
   const bp = getBreakpoint(columns, rows);
   const maxVisible = toolVisibleLines(bp);
   const contentWidth = Math.max(10, columns - 5);

@@ -12,6 +12,7 @@
 import React from 'react';
 import { render } from 'ink';
 import { App } from './App.js';
+import { WindowSizeProvider } from './layout/window-size.js';
 
 const ENTER_ALT_SCREEN = '\u001B[?1049h\u001B[H';
 const EXIT_ALT_SCREEN = '\u001B[?1049l';
@@ -30,7 +31,13 @@ process.on('exit', restoreScreen);
 process.on('SIGINT', () => { restoreScreen(); process.exit(0); });
 process.on('SIGTERM', () => { restoreScreen(); process.exit(0); });
 
-const instance = render(<App />, { exitOnCtrlC: true });
+// provider 必须包在 render 的根位置（App 自己要用尺寸）
+const instance = render(
+  <WindowSizeProvider>
+    <App />
+  </WindowSizeProvider>,
+  { exitOnCtrlC: true },
+);
 
 await instance.waitUntilExit();
 restoreScreen();

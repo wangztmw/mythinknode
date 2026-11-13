@@ -2,7 +2,8 @@
  * 状态行与系统行 — 宽度感知，单行截断。
  */
 import React, { useEffect, useState } from 'react';
-import { Box, Text, useWindowSize } from 'ink';
+import { Box, Text } from 'ink';
+import { useTerminalSize } from '../layout/window-size.js';
 import { colors } from '../theme.js';
 import { truncateToWidth } from '../text/width.js';
 import type { LogItem } from '../store.js';
@@ -10,7 +11,7 @@ import type { LogItem } from '../store.js';
 const FRAMES = ['✻', '✶', '✳', '✢', '·'];
 
 export function ThinkingStatus({ status }: { status: string }) {
-  const { columns } = useWindowSize();
+  const { columns } = useTerminalSize();
   const [frame, setFrame] = useState(0);
 
   useEffect(() => {
@@ -35,7 +36,7 @@ function metaNumber(meta: LogItem['meta'], key: string): number | null {
 }
 
 export function SystemLine({ item }: { item: LogItem }) {
-  const { columns } = useWindowSize();
+  const { columns } = useTerminalSize();
   const ms = metaNumber(item.meta, 'ms');
   const input = metaNumber(item.meta, 'in');
   const output = metaNumber(item.meta, 'out');

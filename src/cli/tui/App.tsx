@@ -5,7 +5,8 @@
  * 数据一次性采集；时钟每秒刷新；q / Ctrl+C 退出。
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
+import { Box, Text, useApp, useInput } from 'ink';
+import { useTerminalSize } from './layout/window-size.js';
 import Spinner from 'ink-spinner';
 import Gradient from 'ink-gradient';
 import BigText from 'ink-big-text';
@@ -155,7 +156,7 @@ function Footer({ columns }: { columns: number }) {
 // ============================================================
 export function App() {
   const { exit } = useApp();
-  const { columns, rows } = useWindowSize();
+  const { columns, rows } = useTerminalSize();
   const snapshot = useMemo(collectSnapshot, []);
   const narrow = !dashboardBreakpoints.twoColumn(columns);
 

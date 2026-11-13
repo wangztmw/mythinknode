@@ -2,7 +2,8 @@
  * 欢迎框 — 响应式：按首帧终端宽度定型（Static 内容不随 resize 重排）。
  */
 import React from 'react';
-import { Box, Text, renderToString, useWindowSize } from 'ink';
+import { Box, Text, renderToString } from 'ink';
+import { useTerminalSize } from '../layout/window-size.js';
 import BigText from 'ink-big-text';
 import Gradient from 'ink-gradient';
 import { colors } from '../theme.js';
@@ -31,7 +32,7 @@ function KeyVal({ k, v, valueWidth }: { k: string; v: string; valueWidth: number
 }
 
 export function WelcomeItem({ item }: { item: LogItem }) {
-  const { columns } = useWindowSize();
+  const { columns } = useTerminalSize();
   const meta = item.meta ?? {};
   const boxWidth = clamp(columns - 2, 24, columns);
   const valueWidth = Math.max(8, boxWidth - 14);
