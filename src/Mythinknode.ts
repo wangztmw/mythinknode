@@ -114,6 +114,13 @@ async function main() {
   let resumed = false;
   if (shouldResume) {
     const picked = await Session.pickSession();
+    // 用户在会话选择器里按了 Ctrl+C：干净退出，而不是静默开一个新会话。
+    // 旧实现的 parseInt('\x03') === NaN 会被归到「开新会话」分支。
+    if (picked === 'abort') {
+      try { process.stdin.setRawMode?.(false); } catch { /* 忽略 */ }
+      process.stdout.write('\n已取消。\n');
+      process.exit(0);
+    }
     // 整体接管，而不是逐字段拷贝 —— 逐字段很容易漏（firstUserMessage / baseName /
     // keywordIndex 漏掉会导致恢复后名字被重算、历史检索索引丢失）。
     if (picked) { session = picked; resumed = true; }

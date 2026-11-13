@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { ChatMessage } from '../llm/types.js';
 import { loadKeywords, saveKeywords } from './session_raw.js';
+import { pickSessionFrom, parseStartedAtFromId } from './session_picker.js';
 
 const SESSIONS_DIR = join(homedir(), '.mythinknode', 'sessions');
 const sessionDir = (id: string) => join(SESSIONS_DIR, id);
@@ -213,35 +214,67 @@ export class Session {
     } catch { return null; }
   }
 
-  /** 显示会话选择器并返回用户选择的会话，或 null 表示开新会话 */
-  static async pickSession(): Promise<Session | null> {
+  /**
+   * 显示会话选择器。
+   *
+   * 返回三种结局：
+   *   Session     —— 用户选中并加载成功
+   *   null        —— 开新会话（空回车 / Ctrl+D / 重问耗尽）
+   *   'abort'     —— 用户按 Ctrl+C（调用方应干净退出，而不是开新会话）
+   *
+   * 旧实现返回 `Session | null`，把 Ctrl+C 的 `parseInt('\x03') === NaN`
+   * 也归到「开新会话」分支 —— 用户想退出却静默开了个新会话。
+   *
+   * 输入读取/解析/排版都在 session_picker.ts（纯逻辑、可单测）。
+   */
+  static async pickSession(): Promise<Session | null | 'abort'> {
     let lastSession: Session | null = null;
     if (Session.hasUnfinished()) {
       lastSession = Session.load();
       if (lastSession) lastSession.unlock();
     }
 
-    const all = Session.listAll();
-    if (all.length === 0) return null;
+    const rows = Session.listAll().map(s => ({
+      id: s.id,
+      messages: s.messages,
+      toolCount: s.toolCount,
+      startedAt: Session.startedAtOf(s.id),
+    }));
+    if (rows.length === 0) return null;
 
-    console.log(`Available sessions (${all.length}):\n`);
-    for (let i = 0; i < all.length; i++) {
-      const s = all[i];
-      const marker = lastSession && s.id === lastSession.id ? ' ← last' : '';
-      console.log(`  ${i + 1}. ${s.id} — ${s.messages} messages, ${s.toolCount} tools${marker}`);
+    // cooked 模式下 Ctrl+C 不会变成 data 里的 \x03，而是发 SIGINT。
+    // 此时 Mythinknode.ts 的信号处理器还没注册（它要等 cli 建好），
+    // 所以这里临时挂一个只做「还原终端 + 退出」的处理器，选完移除。
+    const onSigint = (): void => {
+      try { process.stdin.setRawMode?.(false); } catch { /* 忽略 */ }
+      process.stdout.write('\n');
+      process.exit(0);
+    };
+    process.on('SIGINT', onSigint);
+    try {
+      const outcome = await pickSessionFrom(
+        { stdin: process.stdin, stdout: process.stdout },
+        rows,
+        lastSession?.id ?? null,
+      );
+      if (outcome.kind === 'abort') return 'abort';
+      if (outcome.kind === 'new') return null;
+      return Session.loadById(outcome.id);
+    } finally {
+      process.off('SIGINT', onSigint);
     }
-    console.log(`\nEnter number to resume, or press Enter to start new session.`);
+  }
 
-    return new Promise(resolve => {
-      process.stdin.once('data', d => {
-        const idx = parseInt(d.toString().trim()) - 1;
-        if (idx >= 0 && idx < all.length) {
-          resolve(Session.loadById(all[idx].id));
-        } else {
-          resolve(null);
-        }
-      });
-    });
+  /** 读会话的开始时间（供选择器显示相对时间）；缺失时从目录名前缀兜底 */
+  static startedAtOf(id: string): number | undefined {
+    try {
+      const path = sessionPath(id);
+      if (existsSync(path)) {
+        const data = JSON.parse(readFileSync(path, 'utf-8'));
+        if (typeof data.startedAt === 'number' && Number.isFinite(data.startedAt)) return data.startedAt;
+      }
+    } catch { /* 落到目录名解析 */ }
+    return parseStartedAtFromId(id);
   }
 
   /** 调用 LLM 提炼一句话意图（失败返回空串） */
