@@ -9,6 +9,9 @@ import { homedir } from 'node:os';
 import type { ChatMessage } from '../llm/types.js';
 import { loadKeywords, saveKeywords } from './session_raw.js';
 import { pickSessionFrom, parseStartedAtFromId } from './session_picker.js';
+import {
+  NAME_MAX_CHARS, SUFFIX_SHARE, truncateChars, composeName, nameLength, stripTimePrefix,
+} from './session_name.js';
 
 const SESSIONS_DIR = join(homedir(), '.mythinknode', 'sessions');
 const sessionDir = (id: string) => join(SESSIONS_DIR, id);
@@ -16,9 +19,9 @@ const sessionPath = (id: string) => join(sessionDir(id), 'session.json');
 const LOCK_FILE = join(SESSIONS_DIR, '.lock');
 
 const BASE_INTENT_PROMPT =
-  '以上是用户这轮会话的第一句话。用不超过12个中文字提炼用户的核心意图，不要标点，只输出短语。';
+  `以上是用户这轮会话的第一句话。用不超过${NAME_MAX_CHARS}个中文字提炼用户的核心意图，不要标点，只输出短语。`;
 const SUFFIX_INTENT_PROMPT =
-  '以上是用户最近的5条输入。用不超过20个中文字概括这些输入的意图（可按时间顺序合并），不要标点，只输出短语。';
+  `以上是用户最近的5条输入。用不超过${SUFFIX_SHARE}个中文字概括这些输入的意图，不要标点，只输出短语。`;
 
 /** 会话创建时间 → 目录名前缀 YYYYMMDD-HHMM（固定，重命名时不变） */
 function timePrefix(ts: number): string {
@@ -27,24 +30,28 @@ function timePrefix(ts: number): string {
     + `-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-/** 清洗 LLM 输出为可做目录名的短语 */
+/**
+ * 清洗 LLM 输出为可做目录名的短语。
+ *
+ * 截断用 `truncateChars`（按码点）而不是 `slice`（按 UTF-16 码元）：
+ * 后者会把 emoji 或组合字符切成半个，产生乱码且可能导致目录创建失败。
+ */
 function sanitizeTitle(text: string, maxLen: number): string {
-  return text
+  const cleaned = text
     .replace(/[\r\n]+/g, ' ')
     .replace(/[^一-鿿\w\s-]/g, '')
     .trim()
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, maxLen)
-    .replace(/-+$/g, '');
+    .replace(/^-+|-+$/g, '');
+  return truncateChars(cleaned, maxLen).replace(/-+$/g, '');
 }
 
 /**
  * 本地即时命名素材 —— 零 LLM 调用。
  *
  * 取第一行非空文本清洗成短语；英文按 `-` 词边界切，避免截出半个单词。
- * 中文没有空格，sanitizeTitle 后是整段，直接按长度截断。
+ * 中文没有空格，sanitizeTitle 后是整段，直接按码点截断。
  */
 function localIntent(text: string, maxLen: number): string {
   const firstLine = text
@@ -56,16 +63,16 @@ function localIntent(text: string, maxLen: number): string {
 
   const cleaned = sanitizeTitle(firstLine, maxLen * 4);
   if (!cleaned) return '';
-  if (cleaned.length <= maxLen) return cleaned;
+  if (nameLength(cleaned) <= maxLen) return cleaned;
 
-  // 按 - 逐词累积，尽量不在词中间切；一个词就超长（无空格中文）时退回硬截断
+  // 按 - 逐词累积，尽量不在词中间切；一个词就超长（无空格中文）时退回码点截断
   let out = '';
   for (const part of cleaned.split('-')) {
     const next = out ? `${out}-${part}` : part;
-    if (next.length > maxLen) break;
+    if (nameLength(next) > maxLen) break;
     out = next;
   }
-  return out || cleaned.slice(0, maxLen);
+  return out || truncateChars(cleaned, maxLen);
 }
 
 /**
@@ -357,7 +364,7 @@ export class Session {
     if (this.baseName) return false;
     const first = text ?? this.firstUserMessage ?? this.messages.find(isUserIntent)?.content;
     if (!first) return false;
-    const intent = localIntent(first, 12);
+    const intent = localIntent(first, NAME_MAX_CHARS);
     if (!intent) return false;
     this.firstUserMessage ??= first;
     this.baseName = `${timePrefix(this.startedAt)}-${intent}`;
@@ -377,7 +384,7 @@ export class Session {
     const first = this.firstUserMessage ?? this.messages.find(isUserIntent)?.content;
     if (!first) return;
     try {
-      const intent = await this.extractIntent(llm, [first], BASE_INTENT_PROMPT, 12);
+      const intent = await this.extractIntent(llm, [first], BASE_INTENT_PROMPT, NAME_MAX_CHARS);
       if (!intent) return;
       this.baseName = `${timePrefix(this.startedAt)}-${intent}`;
       this.baseNameSource = 'llm';
@@ -389,6 +396,10 @@ export class Session {
    * 会话命名：
    *   {创建时间}-{第一句话意图}[-{最近5条输入的意图概括}]
    * 基础名只生成一次并持久化；每次完成时重算尾缀并整体替换，不累积。
+   *
+   * 字数总预算由 session_name.ts 管理（≤ NAME_MAX_CHARS，不含时间前缀）：
+   * 有尾缀时基础名让位，因为前几个字已经传递了主要意图，
+   * 「后来聊到哪」比基础名的后半段更有信息量。
    */
   async summarize(llm: { chat: (msgs: ChatMessage[], prompt?: string) => Promise<{ content: unknown[]; stop_reason: string }> }): Promise<void> {
     try {
@@ -403,9 +414,12 @@ export class Session {
       }
 
       const suffix = recent.length > 0
-        ? await this.extractIntent(llm, recent, SUFFIX_INTENT_PROMPT, 20)
+        ? await this.extractIntent(llm, recent, SUFFIX_INTENT_PROMPT, SUFFIX_SHARE)
         : '';
-      this.renameTo(suffix ? `${this.baseName}-${suffix}` : this.baseName);
+      // composeName 负责分配份额并保证总长 ≤ NAME_MAX_CHARS
+      const baseOnly = stripTimePrefix(this.baseName);
+      const name = composeName(baseOnly, suffix);
+      this.renameTo(`${timePrefix(this.startedAt)}-${name}`);
     } catch { /* 失败保留原 id */ }
   }
 
