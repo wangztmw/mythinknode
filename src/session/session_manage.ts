@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { ChatMessage } from '../llm/types.js';
 import { loadKeywords, saveKeywords } from './session_raw.js';
-import { pickSessionFrom, parseStartedAtFromId } from './session_picker.js';
+import { pickSessionFrom, parseStartedAtFromId, previewMessages } from './session_picker.js';
+import { pickSessionInteractive } from './session_picker_tui.js';
 import {
   NAME_MAX_CHARS, SUFFIX_SHARE, truncateChars, composeName, nameLength, stripTimePrefix,
 } from './session_name.js';
@@ -226,13 +227,14 @@ export class Session {
    *
    * 返回三种结局：
    *   Session     —— 用户选中并加载成功
-   *   null        —— 开新会话（空回车 / Ctrl+D / 重问耗尽）
-   *   'abort'     —— 用户按 Ctrl+C（调用方应干净退出，而不是开新会话）
+   *   null        —— 开新会话（n / Ctrl+D / 重问耗尽）
+   *   'abort'     —— 用户按 q / Esc / Ctrl+C（调用方应干净退出，而不是开新会话）
    *
-   * 旧实现返回 `Session | null`，把 Ctrl+C 的 `parseInt('\x03') === NaN`
-   * 也归到「开新会话」分支 —— 用户想退出却静默开了个新会话。
+   * 两条路径：
+   *   TTY   → pickSessionInteractive（raw mode、方向键、滚动视口、内容预览）
+   *   非 TTY → pickSessionFrom（行读取 + 序号），否则 `echo 1 | mtn -r` 会挂住
    *
-   * 输入读取/解析/排版都在 session_picker.ts（纯逻辑、可单测）。
+   * 分流放在这里而不是 TUI 文件内部：「走哪条路径」属于装配决策。
    */
   static async pickSession(): Promise<Session | null | 'abort'> {
     let lastSession: Session | null = null;
@@ -259,11 +261,30 @@ export class Session {
     };
     process.on('SIGINT', onSigint);
     try {
-      const outcome = await pickSessionFrom(
-        { stdin: process.stdin, stdout: process.stdout },
-        rows,
-        lastSession?.id ?? null,
-      );
+      const interactive = process.stdin.isTTY === true && process.env.TERM !== 'dumb';
+
+      const outcome = interactive
+        ? await pickSessionInteractive(
+            { stdin: process.stdin, stdout: process.stdout },
+            rows,
+            lastSession?.id ?? null,
+            {
+              // 预览按需加载；大会话（实测有 7MB session.json）全量 parse 约 50~100ms，
+              // 交互式选择器内部按 id 缓存，方向键连按不会重复解析。
+              loadPreview: (id) => {
+                const s = Session.loadById(id);
+                if (!s) return null;
+                const cols = process.stdout.columns ?? 80;
+                return previewMessages(s.messages, 8, Math.max(20, cols - 4));
+              },
+            },
+          )
+        : await pickSessionFrom(
+            { stdin: process.stdin, stdout: process.stdout },
+            rows,
+            lastSession?.id ?? null,
+          );
+
       if (outcome.kind === 'abort') return 'abort';
       if (outcome.kind === 'new') return null;
       return Session.loadById(outcome.id);

@@ -54,6 +54,23 @@ const ANSI_RE = /\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007]*\u0007|\u001B[@-_
 export const MAX_ROWS = 20;
 
 /**
+ * 跨调用残留缓冲。
+ *
+ * 为什么需要：`echo -e 'abc\n1\n' | mtn -r` 这类管道输入，**一次 read 就带回多行**。
+ * 若每次 readLineOnce 解析完第一行就把剩余部分丢掉，第二行（'1'）就永久消失 ——
+ * 表现为「非法输入提示后再输正确序号也没反应，直接开了新会话」。
+ * 这与 lessons/L05「一个读事件 ≠ 一个逻辑输入」是同一个缺陷，处理方式也相同：
+ * **解析到分隔符后，剩余部分必须留给下一次调用**。
+ */
+const LEFTOVER = new WeakMap<object, string>();
+
+function splitFirstLine(text: string): { line: string; rest: string } | null {
+  const m = text.match(/\r\n|\r|\n/);
+  if (!m || m.index === undefined) return null;
+  return { line: text.slice(0, m.index).trim(), rest: text.slice(m.index + m[0].length) };
+}
+
+/**
  * 从 stdin 累积到第一个换行，返回整行。
  *
  * 关键点（对照旧实现 `stdin.once('data')` 的缺陷）：
@@ -61,10 +78,22 @@ export const MAX_ROWS = 20;
  *   2. 剥掉 ANSI 转义后再找换行 —— 终端开机序列不会污染输入
  *   3. `\x03` → abort、`\x04` → eof、stdin 关闭 → eof，三种结局显式区分
  *      （旧实现把 Ctrl+C 的 NaN 当成「开新会话」）
+ *   4. 一次读到多行时，剩余部分留给下一次调用（否则管道/粘贴会丢输入）
  */
 export function readLineOnce(io: PickerIO): Promise<ReadResult> {
+  const key = io.stdin as unknown as object;
+
+  // 快路径：上次的残留里已经有完整行 —— 同步返回，不必再等 data 事件
+  const leftover = LEFTOVER.get(key) ?? '';
+  const ready = splitFirstLine(leftover);
+  if (ready) {
+    if (ready.rest) LEFTOVER.set(key, ready.rest); else LEFTOVER.delete(key);
+    return Promise.resolve({ kind: 'line', text: ready.line });
+  }
+
   return new Promise<ReadResult>(resolve => {
-    let pending = '';
+    let pending = leftover;
+    LEFTOVER.delete(key);
     let settled = false;
 
     const cleanup = (): void => {
@@ -88,15 +117,22 @@ export function readLineOnce(io: PickerIO): Promise<ReadResult> {
 
       pending = pending.replace(ANSI_RE, '');
 
-      const m = pending.match(/\r\n|\r|\n/);
-      if (!m || m.index === undefined) return;   // 还没到换行：继续等
+      const got = splitFirstLine(pending);
+      if (!got) return;                      // 还没到换行：继续等
 
-      const line = pending.slice(0, m.index).trim();
-      finish({ kind: 'line', text: line });
+      // ★ 剩余部分留给下一次 readLineOnce，不能丢
+      if (got.rest) LEFTOVER.set(key, got.rest); else LEFTOVER.delete(key);
+      finish({ kind: 'line', text: got.line });
     };
 
     // stdin 提前关闭（Ctrl+D 在 cooked 模式下可能直接触发 end）
-    const onEnd = (): void => finish({ kind: 'eof' });
+    // 缓冲里还有未终结的一行（如 `printf '1'` 无尾换行）→ 当作一行返回
+    const onEnd = (): void => {
+      const rest = pending.trim();
+      pending = '';
+      if (rest) finish({ kind: 'line', text: rest });
+      else finish({ kind: 'eof' });
+    };
     const stdinAny = io.stdin as unknown as {
       once?(e: 'end', l: () => void): unknown;
       on(e: 'end', l: () => void): unknown;
@@ -154,25 +190,26 @@ export function parseStartedAtFromId(id: string): number | undefined {
   return Number.isFinite(ts) ? ts : undefined;
 }
 
-/** 会话列表 → 可直接 write 的文本 */
+/**
+ * 会话列表 → 可直接 write 的文本（非 TTY 降级路径用）。
+ *
+ * 全量输出，不截断：降级路径没有滚动能力，截断会让用户永远够不到老会话。
+ * TTY 路径走 session_picker_tui.ts（带视口滚动）。
+ */
 export function formatSessionList(
   rows: SessionRow[],
   lastId: string | null,
   now: number = Date.now(),
 ): string {
-  const shown = rows.slice(0, MAX_ROWS);
   const lines: string[] = [`可用会话（${rows.length} 个）：`, ''];
 
   // 序号宽度随最大条数自适应，保证列对齐
-  const numWidth = String(shown.length).length;
-  // 名字列宽度：按可见宽度粗略取最长的前 40 个字符
-  const nameWidth = Math.min(
-    44,
-    Math.max(...shown.map(r => r.id.length), 10),
-  );
+  const numWidth = String(rows.length).length;
+  // 名字列宽度：按可见宽度粗略取最长的前 44 个字符
+  const nameWidth = Math.min(44, Math.max(...rows.map(r => r.id.length), 10));
 
-  for (let i = 0; i < shown.length; i++) {
-    const r = shown[i];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
     const num = String(i + 1).padStart(numWidth, ' ');
     const name = r.id.length > nameWidth ? `${r.id.slice(0, nameWidth - 1)}…` : r.id;
     const rel = formatRelative(r.startedAt ?? parseStartedAtFromId(r.id), now);
@@ -180,10 +217,6 @@ export function formatSessionList(
     lines.push(
       `  ${num}. ${name.padEnd(nameWidth, ' ')}  ${rel.padEnd(8, ' ')}  ${r.messages} 条消息${mark}`,
     );
-  }
-
-  if (rows.length > shown.length) {
-    lines.push(`  … 还有 ${rows.length - shown.length} 个（列表中只显示最近 ${MAX_ROWS} 个）`);
   }
 
   lines.push('', '输入序号恢复，直接回车开新会话：');
@@ -239,4 +272,77 @@ export function previewOf(messages: ChatMessage[], maxLen = 40): string {
     return t.length > maxLen ? `${t.slice(0, maxLen - 1)}…` : t;
   }
   return '';
+}
+
+/** 按显示宽度截断（中文按 2 列算），用于预览行 */
+export function truncateToWidth(text: string, width: number): string {
+  if (width <= 0) return '';
+  let w = 0;
+  let out = '';
+  for (const ch of text) {
+    const cw = /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(ch) ? 2 : 1;
+    if (w + cw > width) return out + '…';
+    out += ch;
+    w += cw;
+  }
+  return out;
+}
+
+/** 预览里显示的单个块 */
+export interface PreviewBlock {
+  /** 前缀：'> ' 用户 / '⏺ ' 工具 / '  ' 助手续行 */
+  prefix: string;
+  text: string;
+}
+
+/**
+ * 取会话**最后** maxLines 条可读内容，供选择器预览。
+ *
+ * 为什么取最后 N 条而不是最前 N 条：用户找会话时想知道的是「最近聊到哪」，
+ * 不是「这个会话怎么开头的」。
+ *
+ * 过滤规则与 historyToBlocks() 保持一致（见 session_history.ts）：
+ *   - 以 `[` 开头的 user 消息是注入内容（[S1] 压缩摘要 / [NODE MIND] 检索 /
+ *     [TRAIT GRAPH] 轨迹 / [Agent ...] 通知），不是用户说的话
+ *   - tool_result 噪音太大，预览不显示（工具名已在 tool_use 行体现）
+ */
+export function previewMessages(
+  messages: ChatMessage[],
+  maxLines: number,
+  width: number,
+): PreviewBlock[] {
+  if (maxLines <= 0) return [];
+  const out: PreviewBlock[] = [];
+  const push = (prefix: string, text: string): void => {
+    // 多行内容压成一行：预览是给人扫的，不是给人读的
+    const flat = text.replace(/\s+/g, ' ').trim();
+    if (!flat) return;
+    out.push({ prefix, text: truncateToWidth(flat, Math.max(4, width - prefix.length)) });
+  };
+
+  for (const m of messages) {
+    if (m.role === 'user') {
+      if (typeof m.content !== 'string') continue;      // 数组 = tool_result
+      const t = m.content.trim();
+      if (!t || t.startsWith('[')) continue;
+      push('> ', t);
+      continue;
+    }
+    if (m.role === 'assistant' && Array.isArray(m.content)) {
+      for (const block of m.content as Array<Record<string, unknown>>) {
+        if (block?.type === 'text' && typeof block.text === 'string') {
+          push('  ', block.text);
+        } else if (block?.type === 'tool_use' && typeof block.name === 'string') {
+          const input = block.input as Record<string, unknown> | undefined;
+          const summary = input && typeof input === 'object'
+            ? (input.file_path ?? input.command ?? input.path ?? input.pattern ?? input.action ?? '')
+            : '';
+          push('⏺ ', summary ? `${block.name}(${String(summary)})` : block.name);
+        }
+      }
+    }
+  }
+
+  // 只留最后 maxLines 条（保留原文顺序）
+  return out.length > maxLines ? out.slice(-maxLines) : out;
 }
