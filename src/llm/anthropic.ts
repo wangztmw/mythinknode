@@ -25,7 +25,7 @@ export const anthropicProvider: LLMProvider = {
     };
   },
 
-  async call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string, maxTokens?: number): Promise<LLMResponse> {
+  async call(systemPrompt: string, messages: ChatMessage[], apiKey: string, model: string, tools: unknown[], openaiBase?: string, maxTokens?: number, signal?: AbortSignal): Promise<LLMResponse> {
     // 只保留 API 认识的字段：tool_use 块里可能带有内部标记（如 _argError/_rawArgs），
     // Anthropic 对未知字段是严格的，跨 provider 切换时会 400。
     const clean = (content: unknown): unknown => {
@@ -58,7 +58,7 @@ export const anthropicProvider: LLMProvider = {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
-    });
+    }, 10, 120_000, 600_000, signal);
     if (!ok) throw new Error(`API ${status}: ${text.slice(0, 200)}`);
     let d: Record<string, unknown>;
     try {

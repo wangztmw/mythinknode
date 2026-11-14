@@ -228,6 +228,16 @@ export function createTuiCLI() {
       store.appendBatch(items);
     },
 
+    /**
+     * 注册/清除中断处理器。
+     *
+     * 主循环在一轮执行开始时注册（ESC/Ctrl+C → 打断这一轮），
+     * 一轮结束时清除（此时 Ctrl+C 恢复「退出」语义）。
+     */
+    setInterruptHandler(fn: (() => boolean) | null): void {
+      store.interruptHandler = fn;
+    },
+
     close(): void {
       store.forceExit();
     },

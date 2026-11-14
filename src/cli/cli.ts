@@ -69,6 +69,17 @@ export function createCLI() {
       ss.writeLines(lines.join('\n'));
     },
 
+    /**
+     * 注册/清除中断处理器（classic 路径）。
+     *
+     * raw 模式下 `\x03` 会作为数据到达，由 input-buffer 识别后调用 handler；
+     * cooked 模式下 Ctrl+C 是 SIGINT —— 由主程序在运行期临时接管
+     * （见 Mythinknode.ts 的 runInterruptTrap）。
+     */
+    setInterruptHandler(fn: (() => boolean) | null): void {
+      input.interruptHandler = fn;
+    },
+
     close: input.close,
   };
 }

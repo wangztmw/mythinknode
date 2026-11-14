@@ -59,6 +59,21 @@ export function createInputBuffer(ss: ScreenStateLike, driver: InputDriver) {
   let resolveLine: ((value: string) => void) | null = null;
   const model = createModel();
   let closed = false;
+  // handleUnit 定义在 return 之前，但需要在运行时访问返回对象上的 interruptHandler。
+  // 用延迟绑定（赋值在 return 语句之后的 finally 里做不到，所以在返回对象创建后回填）。
+  let returnApi: { interruptHandler: (() => boolean) | null } = { interruptHandler: null };
+  /**
+   * 是否正在执行一轮。
+   *
+   * ⚠️ 运行期间**绝不能** `process.stdin.pause()`：raw mode 下 ISIG 是关的，
+   * Ctrl+C 不会变成 SIGINT，只会变成 stdin 上的一个 `\x03` 字节。
+   * 一旦 pause，这个字节就永远读不到 —— 用户按 Ctrl+C 毫无反应，
+   * 只能等模型自己跑完（或者用 kill 杀进程，会话上下文全丢）。
+   *
+   * 正确做法：继续读，但 busy 时只认「中断键」，其余按键丢弃
+   * （否则打字会串到下一次提示符里）。
+   */
+  let busy = false;
 
   // 进入 raw mode（保 IME composition 状态机）
   if (typeof process.stdin.setRawMode === 'function') {
@@ -84,6 +99,13 @@ export function createInputBuffer(ss: ScreenStateLike, driver: InputDriver) {
     const effect = applyChunk(model, unit);
 
     if (effect.exit) {
+      // 优先把 Ctrl+C 交给「中断当前行动」——只有没有可打断目标时才真退出。
+      // 否则用户在模型跑到一半时按 Ctrl+C，整个进程会被杀掉（会话上下文全丢）。
+      const api = returnApi as { interruptHandler: (() => boolean) | null };
+      if (api.interruptHandler && api.interruptHandler()) {
+        ss.emit('\n⏹ 正在中断当前行动…\n');
+        return;
+      }
       driver.cleanup?.();
       ss.emit('\nBye.\n');
       process.exit(0);
@@ -113,6 +135,22 @@ export function createInputBuffer(ss: ScreenStateLike, driver: InputDriver) {
   let pending = '';
   process.stdin.on('data', (chunk: string) => {
     if (closed) return;
+    if (busy) {
+      // 运行中：只认中断键（Ctrl+C / Esc），其余输入丢弃。
+      // 中断键本身不能进入行编辑状态机，否则会被当成「退出」直接杀进程。
+      if (chunk.includes('\x03')) {
+        pending = '';
+        if (returnApi.interruptHandler?.()) ss.emit('\n⏹ 正在中断当前行动…\n');
+        return;
+      }
+      if (chunk.includes('\x1b') && !chunk.includes('\x1b[')) {
+        pending = '';
+        if (returnApi.interruptHandler?.()) ss.emit('\n⏹ 正在中断当前行动…\n');
+        return;
+      }
+      pending = '';          // 运行中敲的其它字不要留到下一轮提示符
+      return;
+    }
     pending += chunk;
     while (pending.length > 0) {
       const unit = extractUnit(pending);
@@ -127,11 +165,21 @@ export function createInputBuffer(ss: ScreenStateLike, driver: InputDriver) {
     }
   });
 
-  return {
-    setBusy(busy: boolean): void {
-      if (busy) {
-        process.stdin.pause();
-      } else {
+  const api = {
+    /**
+     * 运行期中断处理器（由主循环在一轮执行时注册）。
+     * raw 模式下 Ctrl+C 是 `\x03` 数据而不是 SIGINT，所以必须在这里消费掉，
+     * 否则会被 applyChunk 当成「退出」，直接把进程杀掉。
+     */
+    interruptHandler: null as (() => boolean) | null,
+
+    setBusy(isBusy: boolean): void {
+      // ⚠️ 不能用 stdin.pause()：那会让运行期间的 Ctrl+C（raw mode 下是 \x03 字节，
+      // 不是 SIGINT）永远读不到 —— 用户以为按键失灵，实际是根本没收到。
+      // 改为保持读取 + busy 标志过滤（见上方 data 监听）。
+      busy = isBusy;
+      if (!isBusy) {
+        pending = '';
         process.stdin.resume();
       }
     },
@@ -157,4 +205,8 @@ export function createInputBuffer(ss: ScreenStateLike, driver: InputDriver) {
       process.exit(0);
     },
   };
+
+  // 回填：让 handleUnit 里的 exit 分支能访问到 interruptHandler
+  returnApi = api;
+  return api;
 }

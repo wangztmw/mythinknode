@@ -43,9 +43,14 @@ export interface AgentLoopParams {
   systemPrompt?: string;
   silent?: boolean;
   onRound?: (i: number) => void;
+  /** 用户中断信号（Esc / Ctrl+C）。abort 后本函数尽快返回 status='killed'。 */
+  signal?: AbortSignal;
 }
 
 // ---- 辅助函数 ----
+
+/** 中断时给用户看的一句话（经 renderResult 显示，不依赖渲染层时序） */
+const INTERRUPTED_TEXT = '⏹ 已中断当前行动（会话已保留，可直接继续对话）';
 
 function extractText(response: any): string {
   return (response.content as Array<{ type: string; text?: string }>)
@@ -108,22 +113,54 @@ function noProgressNotice(streak: number, calls: Array<{ name: string }>): strin
     + `narrower scope), or stop and report what is blocking you.`;
 }
 
+interface ToolExecResult {
+  calls: Array<{ name: string; id: string; input: Record<string, unknown>; output: string }>;
+  /** 执行过程中发生过用户中断（工具被哨兵提前结束） */
+  interrupted: boolean;
+}
+
 async function executeTools(
   engine: AgentEngine,
   response: any,
   updateStats?: (name: string, summary: string, output: string, feedback?: string) => void,
   serial?: boolean,
   silent?: boolean,
-): Promise<Array<{ name: string; id: string; input: Record<string, unknown>; output: string }>> {
+  signal?: AbortSignal,
+): Promise<ToolExecResult> {
   const toolUses = (response.content as any[]).filter((b: any) => b.type === 'tool_use' && b.name && b.id);
   const toolMap = engine.toolMap;
   const toolContext = engine.toolContext;
   const TOOL_TIMEOUT_MS = 30_000;
+  /** 工具因用户中断而未执行完成时的填充文本 */
+  const INTERRUPTED_TOOL_OUTPUT = '[interrupted] 该工具调用因用户中断而未完成，结果不可用。';
+  let interruptedDuringTools = false;
+
+  /** 中断哨兵：让每个工具都能被 signal 提前结束，而不是干等到 30s 超时 */
+  const interruptPromise = new Promise<{ data: string; _timeout: boolean; _interrupted: boolean }>((resolve) => {
+    if (!signal) return;                     // 没有 signal 就永远不 resolve
+    if (signal.aborted) {
+      resolve({ data: INTERRUPTED_TOOL_OUTPUT, _timeout: false, _interrupted: true });
+      return;
+    }
+    signal.addEventListener('abort', () => {
+      resolve({ data: INTERRUPTED_TOOL_OUTPUT, _timeout: false, _interrupted: true });
+    }, { once: true });
+  });
 
   const executeOne = async (b: any) => {
     const tool = toolMap.get(b.name!);
     let output = '';
     let timedOut = false;
+    if (signal?.aborted) {
+      // 已经被打断：不再发起新工具，直接给一条「未执行」的结果，
+      // 保证 tool_use / tool_result 配对完整（否则会话永久 400）。
+      output = INTERRUPTED_TOOL_OUTPUT;
+      if (updateStats) {
+        const summary = tool?.getToolUseSummary?.(b.input || {}) || b.name!;
+        updateStats(b.name!, summary, output);
+      }
+      return { name: b.name!, id: b.id!, input: b.input || {}, output };
+    }
     if (b._argError) {
       // 参数不是合法 JSON（openai.ts 容错解析也救不回来）→ 不执行工具，
       // 把错误当成工具结果回灌给模型，让它下一轮重发合法 JSON。
@@ -141,6 +178,8 @@ async function executeTools(
       try {
         const r = await Promise.race([
           tool.call(b.input || {}, toolContext),
+          // 用户中断：立刻结束等待（工具本身可能还在后台跑，但不能阻塞用户）
+          interruptPromise,
           new Promise<{ data: string; _timeout: boolean }>((resolve) =>
             setTimeout(() => resolve({
               data: `(tool "${b.name!}" still running after ${TOOL_TIMEOUT_MS / 1000}s — agent will check next round)`,
@@ -150,6 +189,10 @@ async function executeTools(
         ]);
         output = typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
         timedOut = !!(r as any)._timeout;
+        if ((r as any)._interrupted) {
+          // 记下中断状态，让调用方决定是否提前结束整轮
+          interruptedDuringTools = true;
+        }
       } catch (e) { output = `Error: ${(e as Error).message}`; }
     } else { output = `Unknown tool: ${b.name}`; }
     if (updateStats) {
@@ -164,6 +207,7 @@ async function executeTools(
   };
 
   // 工具名立刻出字 + 心跳时间
+  if (toolUses.length === 0) return { calls: [], interrupted: !!signal?.aborted };
   const toolNames = toolUses.map((b: any) => b.name!).join(', ');
   const toolStart = Date.now();
   let toolTick: ReturnType<typeof setInterval> | undefined;
@@ -189,7 +233,7 @@ async function executeTools(
   if (toolTick) clearInterval(toolTick);
   const elapsed = Date.now() - toolStart;
   if (!silent) engine.emit({ type: 'tool_display', calls: engine.mergeToolCalls(calls), elapsedMs: elapsed });
-  return calls;
+  return { calls, interrupted: interruptedDuringTools || !!signal?.aborted };
 }
 
 function pushResults(
@@ -210,6 +254,9 @@ export async function agentLoop(
 ): Promise<LoopResult> {
   const { messages, maxRounds, onTurnComplete, onComplete,
           preRoundCheck, updateStats, phaseLabel, serialTools, silent, onRound } = params;
+  // ⚠️ 局部别名：下面 preRoundCheck 的返回值也叫 signal（字符串），
+  // 直接用 params.signal 会与它 shadow（踩过一次，导致中断检查永远读到 undefined）。
+  const abortSignal = params.signal;
   let inputTokens = 0;
   let outputTokens = 0;
   let totalToolCount = 0;
@@ -234,6 +281,11 @@ export async function agentLoop(
   });
 
   for (;;) {
+    // ---- 用户中断：优先于所有预算/护栏判定 ----
+    if (abortSignal?.aborted) {
+      onComplete?.('(interrupted)');
+      return done('killed', INTERRUPTED_TEXT);
+    }
     // ---- 绝对上限 ----
     if (round >= hardRounds) {
       return done('max_rounds', `(round budget exhausted: ${round} rounds, ${extensions} extension(s))`, { roundCount: round });
@@ -281,6 +333,11 @@ export async function agentLoop(
       }
     }
 
+    if (abortSignal?.aborted) {
+      onComplete?.('(interrupted)');
+      return done('killed', INTERRUPTED_TEXT);
+    }
+
     onRound?.(round);
 
     let response: { content: Array<unknown>; stop_reason: string; usage?: { input_tokens: number; output_tokens: number } };
@@ -298,7 +355,7 @@ export async function agentLoop(
       }
 
       try {
-        response = await engine.llm.chat(messages, params.systemPrompt || engine.systemPrompt, 384000);
+        response = await engine.llm.chat(messages, params.systemPrompt || engine.systemPrompt, 384000, abortSignal);
         if (response.usage) {
           inputTokens += response.usage.input_tokens;
           outputTokens += response.usage.output_tokens;
@@ -311,7 +368,20 @@ export async function agentLoop(
       const toolCount = (response.content as Array<{ type: string }>).filter(b => b.type === 'tool_use').length;
       if (!silent) engine.emit({ type: 'thinking_end', label: phase, elapsedMs, toolCount, time: Date.now() });
     } catch (e) {
-      const errMsg = (e as Error).message || String(e);
+      const err = e as Error;
+      // 用户中断导致的 abort 不是崩溃：返回 killed，让 session_loop 走「提交 + 修复」路径。
+      // 判据有三个（任一成立即中断）：
+      //   1. signal 已 abort（我们自己发起的中断）
+      //   2. 错误 name 是 UserAbortError（retry.ts 里抛的）
+      //   3. 错误 name 是 AbortError 且 message 含 user —— undici 把 signal.abort() 包成 AbortError
+      const isUserAbort = !!abortSignal?.aborted
+        || err?.name === 'UserAbortError'
+        || (err?.name === 'AbortError' && /user|interrupt|aborted by user/i.test(err.message || ''));
+      if (isUserAbort) {
+        onComplete?.('(interrupted)');
+        return done('killed', INTERRUPTED_TEXT);
+      }
+      const errMsg = err.message || String(e);
       return done('crashed', `LLM call failed: ${errMsg}`);
     }
 
@@ -346,9 +416,18 @@ export async function agentLoop(
         else if (fm) feedback = fm[1];
       }
 
-      const toolResults = await executeTools(engine, response,
-        (n, s, o, f) => updateStats?.(n, s, o, f || feedback || undefined), serialTools, silent);
+      const exec = await executeTools(engine, response,
+        (n, s, o, f) => updateStats?.(n, s, o, f || feedback || undefined), serialTools, silent, abortSignal);
+      const toolResults = exec.calls;
+      // ★ 先 pushResults 再判断中断：tool_use 已经在上面 push 过了，
+      // 若直接 return 不补 tool_result，会话就会留下悬空 tool_use → 下次请求永久 400。
       pushResults(messages, engine, toolResults);
+
+      // ---- 用户中断：工具结果已补齐配对，可以安全结束整轮 ----
+      if (exec.interrupted || abortSignal?.aborted) {
+        onComplete?.('(interrupted)');
+        return done('killed', INTERRUPTED_TEXT);
+      }
 
       // ---- 无进展检测：连续相同的 工具+参数+输出 ----
       const fp = roundFingerprint(toolResults);

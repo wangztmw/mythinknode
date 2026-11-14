@@ -13,6 +13,7 @@ import { AgentEngine } from './agent/agent_def.js';
 import { Session } from './session/session_manage.js';
 import { runSession, resetPipelineCaches } from './session_loop.js';
 import { createCLI } from './cli/cli.js';
+import { abortCurrentRun, hasActiveRun } from './agent/interrupt.js';
 import { VERSION } from './version.js';
 import type { LLMClient } from './llm/types.js';
 import type { Tools } from './tools/core/Tool.js';
@@ -232,6 +233,33 @@ async function main() {
     // 会被 ink 的增量重绘覆盖掉，用户看不到任何错误提示。所以这里宁可丢掉一轮，
     // 也不能丢掉整个会话。
     let stopRender: (() => void) | null = null;
+
+    // ---- 中断接管 ----
+    // 一轮执行期间：Esc / Ctrl+C → 打断当前行动（会话保留），而不是杀进程。
+    // classic 模式下 Ctrl+C 是 SIGINT（cooked）或 \x03 数据（raw），两条都要接管。
+    // ⚠️ classic 模式下 setBusy(true) 会 process.stdin.pause()，
+    // 此时 Ctrl+C 的 \x03 根本读不到 —— 只能靠 SIGINT 送达。
+    // 所以两条路径都必须能中断，且都要给用户反馈（否则按键像是没反应）。
+    const onSigint = (): void => {
+      if (hasActiveRun()) {
+        abortCurrentRun('用户中断');
+        try { cli.writeLines('\n⏹ 正在中断当前行动…'); } catch { /* 忽略 */ }
+        return;
+      }
+      // 空闲时收到 SIGINT（少见）：保持原语义，干净退出
+      try { process.stdin.setRawMode?.(false); } catch { /* 忽略 */ }
+      process.exit(0);
+    };
+    cli.setInterruptHandler?.(() => {
+      const had = hasActiveRun();
+      if (had) {
+        abortCurrentRun('用户中断');
+        try { cli.writeLines(''); } catch { /* 忽略 */ }
+      }
+      return had;
+    });
+    if (!useTui) process.on('SIGINT', onSigint);
+
     try {
       cli.setBusy(true);
       stopRender = cli.startRender(engine);
@@ -245,8 +273,12 @@ async function main() {
       try { stopRender?.(); } catch { /* 退订失败不影响恢复 */ }
       try { cli.renderError((e as Error).message || String(e)); } catch { /* 渲染失败也要继续 */ }
     } finally {
+      // 一轮结束：撤掉中断接管，Ctrl+C 恢复「退出」语义。
+      try { cli.setInterruptHandler?.(null); } catch { /* 忽略 */ }
+      if (!useTui) process.off('SIGINT', onSigint);
       // 无论如何都要放开输入，否则就是「进程活着但键盘失灵」。
       try { cli.setBusy(false); } catch { /* 忽略 */ }
+      // 中断或异常时 session 可能已由 session_loop 修好并落盘，这里再兜一次。
       try { session.save(); } catch (e) { console.error('[session] save failed:', (e as Error).message); }
     }
   }

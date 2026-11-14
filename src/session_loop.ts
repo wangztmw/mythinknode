@@ -18,6 +18,8 @@ import { setTraitGraphSessionId, clearTraitGraphSessionId } from './traitgraph/i
 import { recallTraits } from './traitgraph/recall.js';
 import { renderNode } from './traitgraph/format.js';
 import type { ChatMessage } from './llm/types.js';
+import { beginRun, endRun, type RunHandle } from './agent/interrupt.js';
+import { repairDanglingToolUses, interruptNotice } from './session/session_integrity.js';
 
 // ---- 模块级 pipeline 组件（惰性初始化） ----
 
@@ -150,8 +152,12 @@ export async function runSession(
     }
   } catch (e) { console.error('[TraitGraph] recall failed:', (e as Error).message); }
 
+  // 中断范围 = 这一整轮（LLM 调用 + 工具执行 + 循环）。
+  // handle 在 finally 里 endRun，保证下一轮拿到干净的 signal（未 abort 的新 controller）。
+  const runHandle: RunHandle = beginRun();
   let loopResult = await agentLoop(engine, {
     messages: queryMessages,
+    signal: runHandle.signal,
     // 软预算：每 25 轮一次自检，模型自己决定收尾还是继续（最多续 3 次 → 上限 100 轮）。
     // 同时给了硬护栏：重复调用 + 输出不变连续 6 轮 → 强停；墙钟 45 分钟 → 强停。
     maxRounds: 25,
@@ -176,6 +182,39 @@ export async function runSession(
   // ★ 同步 queryMessages 新增消息回 session.messages（召回背景不落盘）
   if (queryMessages !== session.messages && queryMessages.length > queryBaseLen) {
     session.messages.push(...queryMessages.slice(queryBaseLen));
+  }
+
+  // ★ 中断后的会话完整性修复。
+  // 必须在任何「继续用这个会话」的动作之前做：悬空 tool_use 会让下一次请求 400，
+  // 而且这个 400 是永久的（-r 恢复也救不回来）。
+  const interrupted = loopResult.status === 'killed';
+  if (interrupted) {
+    const report = repairDanglingToolUses(session.messages, {
+      formatToolResult: (id, out) => engine.llm.formatToolResult(id, out),
+    });
+    // 注入中断说明：模型需要知道上一轮没做完，否则它会按原计划继续，
+    // 第二次甚至可能重复同一个危险操作。
+    session.addMessage({
+      role: 'user',
+      content: interruptNotice(
+        loopResult.roundCount ?? 1,
+        report.patched,
+        runHandle.reason,
+      ),
+    });
+    session.save();
+    if (report.patched > 0) {
+      engine.emit({ type: 'notice', kind: 'no-progress', text: `已补齐 ${report.patched} 条中断的工具结果` });
+    }
+    // 中断后不再等后台 Agent（最多 120s）—— 用户刚按了 Ctrl+C，不能又卡两分钟
+    clearTraitGraphSessionId();
+    endRun(runHandle);
+    return {
+      text: loopResult.text,
+      ms: Date.now() - startTime,
+      inputTokens: loopResult.inputTokens,
+      outputTokens: loopResult.outputTokens,
+    };
   }
 
   // Post-loop guard: 等后台 Agent 跑完，flush 信号通知
@@ -239,6 +278,7 @@ export async function runSession(
   }
 
   clearTraitGraphSessionId();
+  endRun(runHandle);
 
   return {
     text: loopResult.text,

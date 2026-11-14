@@ -8,6 +8,12 @@
 
 /** 判断是否值得重试 */
 export function isRetryable(err: Error): boolean {
+  // 用户主动中断（Esc / Ctrl+C）→ 绝不重试。
+  // 注意必须放在最前面：'abort' 子串也出现在超时错误里，
+  // 而超时是要重试的。靠 name 区分，不靠 message。
+  if (err.name === 'UserAbortError') return false;
+  if (err.name === 'AbortError' && /user|interrupt/i.test(err.message)) return false;
+
   const msg = err.message.toLowerCase();
   // 超时/中止/响应体被截断（undici "terminated"）→ 重试
   if (msg.includes('abort') || msg.includes('timeout') || msg.includes('terminated')) return true;
@@ -42,16 +48,36 @@ export async function fetchWithRetry(
   retries = 10,
   perRequestTimeoutMs = 120_000,
   totalTimeoutMs = 600_000,
+  externalSignal?: AbortSignal,
 ): Promise<FetchResult> {
   const totalController = new AbortController();
   const totalTimer = setTimeout(() => totalController.abort(), totalTimeoutMs);
+
+  // 外部中断（用户按 Esc / Ctrl+C）→ 立刻 abort 当前请求并停止重试
+  // name='UserAbortError' 是上游（query_loop / isRetryable）识别「用户中断」的唯一依据
+  const userAbort = new Error('aborted by user');
+  userAbort.name = 'UserAbortError';
+  let abortedByUser = false;
+  const onExternalAbort = (): void => {
+    abortedByUser = true;
+    totalController.abort();
+  };
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(totalTimer);
+      throw userAbort;
+    }
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
 
   let lastErr: Error | null = null;
   let hadEconnreset = false;
 
   try {
     for (let attempt = 0; attempt < retries; attempt++) {
+      if (abortedByUser) throw userAbort;
       if (totalController.signal.aborted) {
+        if (abortedByUser) throw userAbort;
         throw new Error(`Fetch aborted: total timeout (${totalTimeoutMs / 1000}s) exceeded`);
       }
 
@@ -84,6 +110,8 @@ export async function fetchWithRetry(
         return { status: r.status, ok: r.ok, text };
       } catch (e) {
         lastErr = e as Error;
+        // 用户中断：不重试、不等待退避，立刻抛
+        if (abortedByUser) throw userAbort;
         if (totalController.signal.aborted) throw lastErr;
         if (!isRetryable(e as Error) || attempt >= retries - 1) throw e;
 
@@ -102,5 +130,6 @@ export async function fetchWithRetry(
     throw lastErr || new Error('Request failed');
   } finally {
     clearTimeout(totalTimer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
 }

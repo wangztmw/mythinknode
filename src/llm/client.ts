@@ -5,6 +5,7 @@
 import type { LLMClient, LLMResponse, ChatMessage, LLMProvider } from './types.js';
 import type { Tools } from '../tools/core/Tool.js';
 import { ConcurrencyLimiter } from './concurrency.js';
+import { UserAbortError } from '../agent/interrupt.js';
 
 export function createLLMClient(config: {
   provider: LLMProvider;
@@ -24,9 +25,17 @@ export function createLLMClient(config: {
       currentTools = tools;
     },
 
-    async chat(messages: ChatMessage[], systemPrompt?: string, maxTokens?: number): Promise<LLMResponse> {
+    async chat(
+      messages: ChatMessage[],
+      systemPrompt?: string,
+      maxTokens?: number,
+      signal?: AbortSignal,
+    ): Promise<LLMResponse> {
+      // 已经中断就不必排队等配额
+      if (signal?.aborted) throw new UserAbortError();
       await limiter.acquire();
       try {
+        if (signal?.aborted) throw new UserAbortError();
         // 每次调用都重新 formatTools：工具描述可能是 async 函数，需 await 解析；
         // 动态注册工具后 currentTools 变化也能即时反映。
         const formattedTools = await config.provider.formatTools(currentTools);
@@ -43,6 +52,7 @@ export function createLLMClient(config: {
           formattedTools,
           config.openaiBase,
           effectiveMax,
+          signal,
         );
       } finally {
         limiter.release();

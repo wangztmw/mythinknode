@@ -55,6 +55,12 @@ export class TuiStore {
   /** Ctrl+C / close() 时由工厂注入：卸载 Ink 并退出进程 */
   onExit: (() => void) | null = null;
 
+  /**
+   * 运行期中断处理器（由主循环在一轮开始时注册）。
+   * 返回 true = 已接管（打断成功），false = 没有可打断的目标。
+   */
+  interruptHandler: (() => boolean) | null = null;
+
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -103,6 +109,29 @@ export class TuiStore {
 
   setBusy(busy: boolean): void {
     this.update({ busy, status: busy ? this.state.status : null });
+  }
+
+  /**
+   * 请求中断当前行动（Esc / 运行中 Ctrl+C）。
+   *
+   * @returns true = 有正在执行的一轮被打断；false = 当前空闲（调用方应走退出路径）
+   */
+  requestInterrupt(): boolean {
+    if (!this.interruptHandler) return false;
+    let handled = false;
+    try {
+      handled = this.interruptHandler();
+    } catch { return false; }
+    if (handled) {
+      // 给用户即时反馈：按键是有响应的，不是没反应
+      this.append('system', '⏹ 正在中断当前行动…');
+    }
+    return handled;
+  }
+
+  /** 是否正在执行一轮（waiting=false 且非退出态） */
+  isRunning(): boolean {
+    return !this.state.waiting;
   }
 
   setStatus(status: string | null): void {

@@ -182,7 +182,19 @@ export function SessionApp({ store }: { store: TuiStore }) {
 
   useInput((input, key) => {
     if (input) debugInput('key', input, state.input.length);
+
+    // ---- 中断 / 退出 的分流 ----
+    // 关键：Ctrl+C 在「有活干」和「空闲」时语义完全不同。
+    //   运行中（waiting=false）→ 打断当前行动，会话保留
+    //   空闲时（waiting=true） → 退出程序（保持原有肌肉记忆）
+    // Esc 只做中断；空闲时按 Esc 无副作用（避免误退出）。
+    if (key.escape) {
+      store.requestInterrupt();
+      return;
+    }
     if (key.ctrl && (input === 'c' || input === 'd')) {
+      // Ctrl+C 先尝试中断；没有可打断的目标才退出
+      if (input === 'c' && store.requestInterrupt()) return;
       store.forceExit();
       return;
     }
