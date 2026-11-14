@@ -5,7 +5,7 @@ import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
 import { useTerminalSize } from '../layout/window-size.js';
 import { colors } from '../theme.js';
-import { truncateToWidth } from '../text/width.js';
+import { contentWidth as contentWidthOf, truncateToWidth } from '../text/width.js';
 import type { LogItem } from '../store.js';
 
 const FRAMES = ['✻', '✶', '✳', '✢', '·'];
@@ -25,7 +25,7 @@ export function ThinkingStatus({ status }: { status: string }) {
   return (
     <Box marginTop={1}>
       <Text color={colors.brand}>{FRAMES[frame]}</Text>
-      <Text bold color={colors.text}> {truncateToWidth(text, Math.max(10, columns - 4))}</Text>
+      <Text bold color={colors.text}> {truncateToWidth(text, contentWidthOf(columns, 4))}</Text>
     </Box>
   );
 }

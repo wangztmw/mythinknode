@@ -8,7 +8,7 @@ import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { useTerminalSize } from '../layout/window-size.js';
 import { colors } from '../theme.js';
-import { displayWidth, graphemes, truncateToWidth } from '../text/width.js';
+import { contentWidth as contentWidthOf, displayWidth, graphemes, truncateToWidth } from '../text/width.js';
 import { parseMarkdown, preferredWrapMode, type MdBlock, type MdListItem } from './markdown-parse.js';
 import { computeColumnWidths } from './table.js';
 import { parseInline, wrapSegments, type InlineSegment } from './inline.js';
@@ -116,29 +116,51 @@ function Table({ rows, width }: { rows: string[][]; width: number }) {
       );
     }
 
-    const labelWidth = Math.min(
-      Math.max(4, ...header.map(h => segmentsWidth(parseInline(h)) + 1)),
-      Math.max(6, Math.floor(width / 3)),
-    );
+    // 标签列宽度：三个约束取最小，保证「标签 + 值」永不超 width
+    //   ① 自然宽度（表头本身多宽）
+    //   ② 上限 width/3（留 2/3 给值）—— 下限 4，但只在 width 够时才生效
+    //   ③ width - 2：值列至少 2 列
+    //
+    // 为什么是 2 而不是 1：CJK / emoji 一个字符就是 2 列。值列只留 1 列时，
+    // `<Box width={1}>` 里放一个汉字装不下，Ink 不会折行 → 溢出 1 列
+    // （实测 7 列终端渲染出 8 列）。
+    //
+    // 旧写法 labelCap 用 Math.max(6, ...)，在 width=6 时 labelWidth 可到 6、
+    // 值列 max(1, 0)=1，合计 7 > 6 —— 两个 Math.max 各自合理，加和越界。
+    const naturalLabel = Math.max(4, ...header.map(h => segmentsWidth(parseInline(h)) + 1));
+    const labelCap = Math.max(4, Math.floor(width / 3));
+
+    // 极窄（width < 5）：标签列 1 + 值列 2 都放不下，放弃标签、值独占整行。
+    // 丢字段名比溢出好 —— 溢出会让终端二次折行，整屏错乱。
+    const showLabel = width >= 5;
+    const labelWidth = showLabel
+      ? Math.max(1, Math.min(naturalLabel, labelCap, width - 2))
+      : 0;
 
     return (
       <Box flexDirection="column">
         {data.map((row, r) => (
           <Box key={r} flexDirection="column" marginBottom={r < data.length - 1 ? 1 : 0}>
-            {row.map((cell, c) => (
-              <Box key={c} flexDirection="row">
-                <Box width={labelWidth} flexShrink={0}>
-                  <Text color={colors.gray}>
-                    {renderInline(truncateSegments(parseInline(`${header[c] ?? `col${c + 1}`}:`), labelWidth))}
-                  </Text>
-                </Box>
-                <Box width={Math.max(1, width - labelWidth)} flexDirection="column">
+            {row.map((cell, c) => {
+              const value = (
+                <Box width={showLabel ? Math.max(1, width - labelWidth) : width} flexDirection="column">
                   <Text wrap={preferredWrapMode(parseInline(cell).map(s => s.text).join(''))}>
                     {renderInline(parseInline(cell))}
                   </Text>
                 </Box>
-              </Box>
-            ))}
+              );
+              if (!showLabel) return <Box key={c}>{value}</Box>;
+              return (
+                <Box key={c} flexDirection="row">
+                  <Box width={labelWidth} flexShrink={0}>
+                    <Text color={colors.gray}>
+                      {renderInline(truncateSegments(parseInline(`${header[c] ?? `col${c + 1}`}:`), labelWidth))}
+                    </Text>
+                  </Box>
+                  {value}
+                </Box>
+              );
+            })}
           </Box>
         ))}
       </Box>
@@ -187,7 +209,7 @@ function ListItem({ item, contentWidth }: { item: MdListItem; contentWidth: numb
 export function MarkdownBlock({ text, columns: columnsProp }: { text: string; columns?: number }) {
   const { columns: terminalColumns } = useTerminalSize();
   const columns = columnsProp ?? terminalColumns;
-  const contentWidth = Math.max(10, columns - 2);
+  const contentWidth = contentWidthOf(columns, 2);
   const blocks = useMemo(() => parseMarkdown(text), [text]);
 
   const nodes: React.ReactNode[] = [];

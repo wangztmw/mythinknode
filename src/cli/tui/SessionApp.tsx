@@ -12,7 +12,7 @@ import { computeInputGeometry } from './layout/geometry.js';
 import { hintText, inputLines } from './layout/limits.js';
 import { useTerminalSize } from './layout/window-size.js';
 import { cursorLineColumn, wrapLines } from './text/wrap.js';
-import { truncateToWidth } from './text/width.js';
+import { contentWidth as contentWidthOf, truncateToWidth } from './text/width.js';
 import { ErrorBoundary } from './render/ErrorBoundary.js';
 import { WelcomeItem } from './render/welcome.js';
 import { MarkdownBlock } from './render/markdown.js';
@@ -57,7 +57,7 @@ function debugInput(kind: string, text: string, total: number): void {
  */
 function UserLine({ item }: { item: LogItem }) {
   const { columns } = useTerminalSize();
-  const contentWidth = Math.max(10, columns - 2);
+  const contentWidth = contentWidthOf(columns, 2);
   const lines = wrapLines(item.text, contentWidth);
 
   return (

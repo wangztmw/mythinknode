@@ -29,6 +29,26 @@ export function truncateToWidth(text: string, maxWidth: number, ellipsis = '…'
   return head + ellipsis;
 }
 
+/**
+ * 可用内容宽度 = 终端宽度 − 预留（前缀 / 边距）。
+ *
+ * **恒 ≤ columns − reserved，这是硬约束不是建议。**
+ *
+ * 旧写法 `Math.max(10, columns - reserved)` 的意图是「太窄也别挤，保持 10 列可读」，
+ * 但它假设了 `columns - reserved ≥ 10`。一旦不成立，兜底反而制造越界：
+ *
+ *   终端 8 列 → 可用 8 − 2 = 6，但 max(10, 6) = 10 → 宽出 4 列
+ *   ├─ Text 类：我们按 10 折，Ink 再按容器宽度折一次 → 双重折行、参差不齐
+ *   └─ Box 类（表格单元格有显式 width）：Ink 不再折 → 真的溢出，终端二次折行整屏错乱
+ *
+ * 可读性不能靠越界去换：8 列下 10 列和 6 列一样不可读，但 10 列一定难看。
+ */
+export function contentWidth(columns: number, reserved = 0): number {
+  const available = columns - reserved;
+  return available >= 1 ? available : 1;
+}
+
+
 /** 按 grapheme 数量截断（用于语义字符上限） */
 export function truncateGraphemes(text: string, maxGraphemes: number): string {
   if (maxGraphemes <= 0) return '';

@@ -9,14 +9,14 @@ import { colors } from '../theme.js';
 import { getBreakpoint } from '../layout/breakpoints.js';
 import { toolVisibleLines } from '../layout/limits.js';
 import { wrapLines } from '../text/wrap.js';
-import { displayWidth, truncateToWidth } from '../text/width.js';
+import { contentWidth as contentWidthOf, displayWidth, truncateToWidth } from '../text/width.js';
 import type { LogItem } from '../store.js';
 
 export function ToolLine({ item }: { item: LogItem }) {
   const { columns } = useTerminalSize();
   const name = String(item.meta?.name ?? item.text);
   const args = String(item.meta?.args ?? '');
-  const budget = Math.max(4, columns - displayWidth(name) - 6);
+  const budget = contentWidthOf(columns - displayWidth(name), 6);
   const shownArgs = truncateToWidth(args, budget);
 
   return (
@@ -32,7 +32,7 @@ export function ToolResult({ item }: { item: LogItem }) {
   const { columns, rows } = useTerminalSize();
   const bp = getBreakpoint(columns, rows);
   const maxVisible = toolVisibleLines(bp);
-  const contentWidth = Math.max(10, columns - 5);
+  const contentWidth = contentWidthOf(columns, 5);
 
   const lines = wrapLines(item.text, contentWidth);
   const visible = lines.slice(0, maxVisible);

@@ -13,6 +13,7 @@ import BigText from 'ink-big-text';
 import { collectSnapshot, type Snapshot } from './data.js';
 import { colors } from './theme.js';
 import { dashboardBreakpoints } from './layout/breakpoints.js';
+import { contentWidth as contentWidthOf } from './text/width.js';
 
 const ACCENT = colors.accent;
 const MUTED = colors.gray;
@@ -54,7 +55,7 @@ function Header({ snapshot, columns, rows }: { snapshot: Snapshot; columns: numb
   const { config, system } = snapshot;
   const modeLabel = config.local ? '⌂ LOCAL' : '☁ CLOUD';
   const modeColor = config.local ? WARN : OK;
-  const line = '─'.repeat(Math.max(10, columns - 2));
+  const line = '─'.repeat(contentWidthOf(columns, 2));
 
   return (
     <Box flexDirection="column">
@@ -129,7 +130,7 @@ function Footer({ columns }: { columns: number }) {
   }, []);
 
   const time = now.toLocaleTimeString('zh-CN', { hour12: false });
-  const line = '─'.repeat(Math.max(10, columns - 2));
+  const line = '─'.repeat(contentWidthOf(columns, 2));
 
   return (
     <Box flexDirection="column">

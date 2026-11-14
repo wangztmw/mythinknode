@@ -7,12 +7,12 @@ import { useTerminalSize } from '../layout/window-size.js';
 import { colors } from '../theme.js';
 import { THOUGHT_VISIBLE_LINES } from '../layout/limits.js';
 import { wrapLines } from '../text/wrap.js';
-import { truncateToWidth } from '../text/width.js';
+import { contentWidth as contentWidthOf, truncateToWidth } from '../text/width.js';
 import type { LogItem } from '../store.js';
 
 export function ThoughtBlock({ item }: { item: LogItem }) {
   const { columns } = useTerminalSize();
-  const contentWidth = Math.max(10, columns - 2);
+  const contentWidth = contentWidthOf(columns, 2);
   const lines = wrapLines(item.text, contentWidth);
   const visible = lines.slice(0, THOUGHT_VISIBLE_LINES);
   const folded = lines.length - visible.length;
