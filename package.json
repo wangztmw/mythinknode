@@ -1,6 +1,6 @@
 {
   "name": "@wangzt_mw/mythinknode",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "A minimal AI coding agent — exploring the structures that support intelligence and their boundaries",
   "type": "module",
   "main": "dist/Mythinknode.js",
