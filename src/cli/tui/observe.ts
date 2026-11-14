@@ -89,47 +89,11 @@ export function createSampler(
   };
 }
 
-/**
- * 把快照翻译成给用户看的一行文字。
- *
- * 时间在这里算 —— `now - startedAt`，不是从 agent 拿的过期数字。
- * 这是整个 pull 模型的关键点：**时间语义归观察者所有**。
+/*
+ * 注：这里曾有 viewStatus() / StatusView —— 把快照翻译成「带 warning 的一行文字」。
+ * 已删除，原因有二：
+ *   1) 它是死代码：真正用的适配在 cli/tui/session.tsx
+ *   2) 它的 warning 是硬编码阈值策略（3s「仍在进行」/15s「可能卡住」），
+ *      而「状态不变」既可能是 sleep 30（正常）也可能是死锁，信号没有区分力。
+ *      秒数本身已经把「过了多久」说清楚了（见 Plan/20261114-1636-tui-ux-polish/）。
  */
-export interface StatusView {
-  /** 主文案，如 "Thinking"、"Bash" */
-  main: string;
-  /** 阶段说明，如 "analyzing"、"reviewing results" */
-  detail: string;
-  /** 已过秒数（1 位小数） */
-  elapsedSec: number;
-  /** 观察者自己判断的异常提示（agent 完全不知道这个逻辑存在） */
-  warning: string | null;
-}
-
-/** 「疑似卡住」阈值 —— 观察者侧的策略，与 agent 无关 */
-const SLOW_HINT_MS = 3_000;
-const STUCK_HINT_MS = 30_000;
-
-export function viewStatus(obs: Observation): StatusView | null {
-  const { state, now, sinceChangeMs } = obs;
-  if (state.phase === 'idle') return null;
-
-  const startedAt = state.tool?.startedAt ?? state.phaseStartedAt;
-  const elapsedMs = Math.max(0, now - startedAt);
-  const isThinking = state.phase === 'thinking';
-
-  // thinking 阶段的 label 是 'analyzing' 之类；executing 阶段的 label 就是工具名
-  const main = isThinking ? 'Thinking' : (state.tool?.name ?? state.label);
-  const detail = isThinking ? state.label : '';
-
-  let warning: string | null = null;
-  if (sinceChangeMs >= STUCK_HINT_MS) warning = `⚠ 已 ${Math.round(sinceChangeMs / 1000)}s 无变化，可能卡住`;
-  else if (elapsedMs >= SLOW_HINT_MS) warning = '仍在进行…';
-
-  return {
-    main,
-    detail,
-    elapsedSec: elapsedMs / 1000,
-    warning,
-  };
-}

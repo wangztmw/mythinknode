@@ -111,7 +111,7 @@ export function createRenderer(ss: ScreenStateLike) {
       let renderedKey = '';
       let statusActive = false;
       const unsubObserve = sampler.subscribe(obs => {
-        const { state, now, sinceChangeMs } = obs;
+        const { state, now } = obs;
         if (state.phase === 'idle') {
           if (statusActive) { ss.endStatus(''); statusActive = false; renderedKey = ''; }
           return;
@@ -122,13 +122,12 @@ export function createRenderer(ss: ScreenStateLike) {
         const isThinking = state.phase === 'thinking';
         const main = isThinking ? 'Thinking' : (state.tool?.name ?? state.label);
         const detail = isThinking ? ` — ${trunc(state.label, cols - 25)}` : '';
-        const warn = sinceChangeMs >= 15_000
-          ? `  ⚠ ${Math.round(sinceChangeMs / 1000)}s 无变化`
-          : (now - startedAt >= 3_000 ? '  仍在进行…' : '');
-        const content = `  ● ${B}${main}${b} (${sec}s)${detail}${warn}`;
+        // 不做「可能卡住/仍在进行」判断：状态不变既可能是 sleep 30（正常）也可能是死锁，
+        // 这个信号没有区分力。秒数本身已经说明「过了多久」。
+        const content = `  ● ${B}${main}${b} (${sec}s)${detail}`;
 
         // 只在内容真的变了时重绘（观察者自己决定节奏，不打断 ss 的其它输出）
-        const key = `${main}|${detail}|${sec}|${warn}`;
+        const key = `${main}|${detail}|${sec}`;
         if (key === renderedKey) return;
         renderedKey = key;
         const leadingNewline = !statusActive && !isFirstThinking;

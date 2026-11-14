@@ -116,7 +116,6 @@ export function createTuiCLI() {
           main: isThinking ? 'Thinking' : (state.tool?.name ?? state.label),
           detail: isThinking ? state.label : '',
           startedAt: state.tool?.startedAt ?? state.phaseStartedAt,
-          lastChangeAt: obs.now - obs.sinceChangeMs,
         });
       });
 

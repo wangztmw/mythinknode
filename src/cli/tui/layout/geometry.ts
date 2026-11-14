@@ -11,6 +11,7 @@
  * 表现为「发消息之后打字，光标不在输入框里」。
  */
 import type { Breakpoint } from './breakpoints.js';
+import { QUEUE_VISIBLE_ITEMS } from './limits.js';
 import { spacing } from '../theme.js';
 
 export interface InputGeometry {
@@ -40,6 +41,20 @@ export const ABOVE_BLOCK_HEIGHTS = {
   /** ThinkingStatus：`marginTop={1}` + 单行状态文本（内部已 truncateToWidth，恒 1 行） */
   status: 2,
 } as const;
+
+/**
+ * 队列托盘占用的行数 —— **0 表示不渲染**。
+ *
+ * ⚠️ 这是托盘「是否渲染」与「占几行」的**唯一来源**。
+ *    分别在两处判断（渲染处看 queue.length > 0，高度处看 queue.length）会漂移，
+ *    一旦漂移就是光标偏上若干行 —— 与之前 ThinkingStatus 那个 bug 同一类（L26）。
+ */
+export function queueRows(queueLength: number): number {
+  if (queueLength <= 0) return 0;
+  const shown = Math.min(queueLength, QUEUE_VISIBLE_ITEMS);
+  const hasMore = queueLength > QUEUE_VISIBLE_ITEMS ? 1 : 0;
+  return shown + hasMore;
+}
 
 export function computeInputGeometry(
   columns: number,

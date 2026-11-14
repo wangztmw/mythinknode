@@ -4,9 +4,16 @@
  * ★ 为什么组件里有 setInterval：
  *   这不是「agent 每秒播报」，而是**观察者**为了让秒数在屏幕上走字而自带的重绘节奏。
  *   agent 只告诉过一次 `startedAt`，之后什么都不知道。
- *   好处：agent 卡住时秒数照涨 → 「数字不走了」这个假象消失，卡顿变成可见的。
+ *   好处：agent 卡住时秒数照涨 → 「数字不走了」这个假象消失。
  *
- * 见 Plan/20261114-1518-observer-pull-model/ 与 lessons/L26。
+ * ★ 为什么是 1000ms 而不是 140ms：
+ *   1) 秒数用 1 秒精度足够（0.1 秒精度对「思考中」没有意义，只会让每帧文本都变，
+ *      增量渲染无法跳过任何行）
+ *   2) Node 对 TTY 的 stdout 是**同步写**，终端消费慢时 write 会阻塞事件循环 →
+ *      stdin 按键排队 → 体感「打字要打两次才显示」。帧率降到 1fps 后写入量降约 7 倍。
+ *   3) spinner 的作用是「心跳」而非「流畅动画」——每秒换一个符号已足以表达「还活着」。
+ *
+ * 见 Plan/20261114-1636-tui-ux-polish/ 与 lessons/L28。
  */
 import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
@@ -18,14 +25,10 @@ import type { LogItem } from '../store.js';
 const FRAMES = ['✻', '✶', '✳', '✢', '·'];
 
 /**
- * 观察者侧的提示阈值 —— agent 完全不知道这些数字存在。
- *
- * ⚠️ STUCK_HINT 必须**明显小于** query_loop 的 TOOL_TIMEOUT_MS(30s)：
- *    否则工具已被外层护栏放弃、提示却还没出现，用户永远看不到。
- *    15s 是「足够久，肯定不正常」与「早于护栏，来得及提示」的折中。
+ * 重绘周期。1 秒 = 秒数变化的自然粒度。
+ * 改前 140ms（7fps）且秒数带 0.1 精度 —— 每帧都在写，慢终端上会拖慢输入响应。
  */
-const SLOW_HINT_MS = 3_000;
-const STUCK_HINT_MS = 15_000;
+const TICK_MS = 1_000;
 
 export interface StatusView {
   /** 主文案：'Thinking' 或工具名 */
@@ -34,23 +37,20 @@ export interface StatusView {
   detail: string;
   /** 本阶段开始时刻 —— 唯一时间源 */
   startedAt: number;
-  /** 上次状态**变化**的时刻（用于判断是不是卡住了） */
-  lastChangeAt: number;
 }
 
-/** 把 StatusView 渲染成一行文字（纯函数，便于测试） */
-export function formatStatus(view: StatusView, now: number): { text: string; warning: string | null } {
+/**
+ * 把 StatusView 渲染成一行文字（纯函数，便于测试）。
+ *
+ * ⚠️ 刻意**不做**「可能卡住 / 仍在进行」这类判断：
+ *    状态不变既可能是 sleep 30（正常），也可能是真的死锁，这个信号没有区分力。
+ *    秒数本身（`Bash (29.0s)`）已经把「过了多久」说清楚了。
+ */
+export function formatStatus(view: StatusView, now: number): string {
   const elapsedMs = Math.max(0, now - view.startedAt);
   const sec = (elapsedMs / 1000).toFixed(1);
   // 两种阶段统一格式：`Bash (1.2s)` / `Thinking (1.2s) · analyzing`
-  const head = view.detail ? `${view.main} (${sec}s) · ${view.detail}` : `${view.main} (${sec}s)`;
-
-  const sinceChange = Math.max(0, now - view.lastChangeAt);
-  let warning: string | null = null;
-  if (sinceChange >= STUCK_HINT_MS) warning = `⚠ ${Math.round(sinceChange / 1000)}s 无变化，可能卡住`;
-  else if (elapsedMs >= SLOW_HINT_MS) warning = '仍在进行…';
-
-  return { text: warning ? `${head}  ${warning}` : head, warning };
+  return view.detail ? `${view.main} (${sec}s) · ${view.detail}` : `${view.main} (${sec}s)`;
 }
 
 export function ThinkingStatus({ status }: { status: StatusView }) {
@@ -59,12 +59,11 @@ export function ThinkingStatus({ status }: { status: StatusView }) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    // 观察者自己的刷新节奏：让秒数走字 + spinner 转。
-    // 与 agent 无关 —— agent 早已不再 emit tick（见 agent/progress.ts）。
+    // 观察者自己的刷新节奏：让秒数走字 + spinner 转。与 agent 无关。
     const timer = setInterval(() => {
       setFrame(f => (f + 1) % FRAMES.length);
       setNow(Date.now());
-    }, 140);
+    }, TICK_MS);
     return () => clearInterval(timer);
   }, []);
 
@@ -72,13 +71,13 @@ export function ThinkingStatus({ status }: { status: StatusView }) {
   // ABOVE_BLOCK_HEIGHTS.status 硬编码为 2（marginTop + 1 行）。
   // 若状态文本里混入换行（异常/多行 label），Text 会折成多行 →
   // 多出来的行没被算进光标定位 → 光标偏上。所以换行先压成空格。
-  const { text, warning } = formatStatus(status, now);
+  const text = formatStatus(status, now);
   const flat = text.replace(/[\r\n]+/g, ' ');
 
   return (
     <Box marginTop={1}>
       <Text color={colors.brand}>{FRAMES[frame]}</Text>
-      <Text bold color={warning ? colors.warn : colors.text}>
+      <Text bold color={colors.text}>
         {' '}{truncateToWidth(flat, contentWidthOf(columns, 4))}
       </Text>
     </Box>

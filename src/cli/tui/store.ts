@@ -32,8 +32,8 @@ export interface LogItem {
 export interface StatusView {
   main: string;
   detail: string;
+  /** 本阶段开始时刻 —— 唯一时间源，时间由渲染层现算 */
   startedAt: number;
-  lastChangeAt: number;
 }
 
 export interface TuiState {
@@ -177,12 +177,6 @@ export class TuiStore {
   }
 
   setStatus(status: StatusView | null): void {
-    // 相同内容不重复写 lastChangeAt，否则「无变化时长」永远归零 → 卡住检测失效
-    const prev = this.state.status;
-    if (status && prev && status.main === prev.main && status.detail === prev.detail) {
-      this.update({ status: { ...status, lastChangeAt: prev.lastChangeAt } });
-      return;
-    }
     this.update({ status });
   }
 

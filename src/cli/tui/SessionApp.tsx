@@ -8,7 +8,7 @@ import { Box, Static, Text, useCursor, useInput, usePaste } from 'ink';
 import { TuiStore, type LogItem } from './store.js';
 import { colors } from './theme.js';
 import { getBreakpoint } from './layout/breakpoints.js';
-import { computeInputGeometry, ABOVE_BLOCK_HEIGHTS } from './layout/geometry.js';
+import { queueRows, computeInputGeometry, ABOVE_BLOCK_HEIGHTS } from './layout/geometry.js';
 import { hintText, inputLines, QUEUE_VISIBLE_ITEMS } from './layout/limits.js';
 import { useTerminalSize } from './layout/window-size.js';
 import { cursorLineColumn, wrapLines } from './text/wrap.js';
@@ -179,8 +179,10 @@ function InputBox(
   const belowCount = view.totalLines - view.start - view.lines.length;
   const belowLabel = bp.narrow ? `+${belowCount}` : `还有 ${belowCount} 行`;
 
-  // 运行中边框换成灰色：不是「不可用」，而是「现在提交会入队」。颜色是唯一不占宽度的提示。
-  const borderColor = running ? colors.gray : colors.accent;
+  // 边框颜色固定：运行中**依然完全可用**（能打字、能提交、能入队），变灰等于告诉用户
+  // 「这里现在没用」，与事实相反。而「提交会入队」已有更好的载体 ——
+  // 空态提示文案 + 提交后立刻出现的队列托盘。颜色是多余的重复信号。
+  const borderColor = colors.accent;
   const emptyHint = running
     ? truncateToWidth('运行中，输入会在本轮结束后接着发送', geometry.textWidth)
     : truncateToWidth('Try “解释这个仓库的结构”', geometry.textWidth);
@@ -334,7 +336,9 @@ export function SessionApp({ store }: { store: TuiStore }) {
   // 注意与 state.busy 解耦：busy 是「主循环在跑」，status 是「观察者看见 agent 在做什么」，
   // 后者是渲染层自己的判断，不该被 busy 的单点真值绑定。
   const statusVisible = state.status != null;
-  const aboveRows = statusVisible ? ABOVE_BLOCK_HEIGHTS.status : 0;
+  // InputBox 上方的区块：状态行 + 队列托盘。
+  // queueRows() 同时决定「托盘渲不渲染」和「占几行」——单点来源，避免漂移（L26）。
+  const aboveRows = (statusVisible ? ABOVE_BLOCK_HEIGHTS.status : 0) + queueRows(state.queue.length);
 
   return (
     <Box flexDirection="column">
@@ -352,6 +356,17 @@ export function SessionApp({ store }: { store: TuiStore }) {
         </ErrorBoundary>
       )}
 
+      {/* 队列托盘放在输入框**上方**：阅读顺序 = 时间顺序。
+          队列里的消息「已提交、即将执行」，逻辑上先于正在输入的内容；
+          放下方等于把时间线倒过来。同时与状态行形成自然的层次：
+            状态行（agent 在做什么）→ 托盘（接下来做什么）→ 输入框（我正在做什么）。
+          ⚠️ 托盘占的行数已计入 aboveRows，否则光标会偏上（见 geometry.queueRows）。 */}
+      {queueRows(state.queue.length) > 0 && (
+        <ErrorBoundary label="queue">
+          <QueueTray queue={state.queue} />
+        </ErrorBoundary>
+      )}
+
       {/* 输入框常驻：运行中也显示，因为此刻用户恰好最有空敲下一条指令。
           改前是 `{state.waiting && <InputBox/>}` —— 一轮开始输入框整个消失，
           用户想补充一句只能干等几十秒（见 Plan/20261114-1134-tui-command-queue）。 */}
@@ -363,11 +378,6 @@ export function SessionApp({ store }: { store: TuiStore }) {
           queued={state.queue.length}
           aboveRows={aboveRows}
         />
-      </ErrorBoundary>
-
-      {/* 托盘放在输入框下方：光标位置不变，零布局风险 */}
-      <ErrorBoundary label="queue">
-        <QueueTray queue={state.queue} />
       </ErrorBoundary>
     </Box>
   );
