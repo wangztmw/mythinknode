@@ -132,7 +132,7 @@ function Table({ rows, width }: { rows: string[][]; width: number }) {
                     {renderInline(truncateSegments(parseInline(`${header[c] ?? `col${c + 1}`}:`), labelWidth))}
                   </Text>
                 </Box>
-                <Box flexGrow={1}>
+                <Box width={Math.max(1, width - labelWidth)} flexDirection="column">
                   <Text wrap={preferredWrapMode(parseInline(cell).map(s => s.text).join(''))}>
                     {renderInline(parseInline(cell))}
                   </Text>
@@ -177,7 +177,7 @@ function ListItem({ item, contentWidth }: { item: MdListItem; contentWidth: numb
       <Box width={leftWidth} flexShrink={0}>
         <Text>{indent}<Text color={colors.accent}>{marker}</Text></Text>
       </Box>
-      <Box flexGrow={1}>
+      <Box width={rightWidth} flexDirection="column">
         {renderTextBlock(item.text, rightWidth)}
       </Box>
     </Box>
@@ -200,10 +200,14 @@ export function MarkdownBlock({ text, columns: columnsProp }: { text: string; co
     return value;
   };
 
+  // ⚠️ 用 width 而不是 flexGrow：MarkdownBlock 跑在 <Static> 里，Static 的容器是
+  // position:absolute 且无 width，Yoga 会按内容撑开它 —— flexGrow 子项拿到的可用宽度
+  // 是「终端宽度」而不是「终端宽度 - 前缀」，导致每行宽出前缀长度（80 列渲染成 82）。
+  // 显式 width 才能保证 overflow 不发生。
   const row = (content: React.ReactNode): React.ReactNode => (
     <Box key={key++} flexDirection="row">
       <Text color={colors.accent}>{prefix()}</Text>
-      <Box flexGrow={1} flexDirection="column">{content}</Box>
+      <Box width={contentWidth} flexDirection="column">{content}</Box>
     </Box>
   );
 
@@ -234,7 +238,7 @@ export function MarkdownBlock({ text, columns: columnsProp }: { text: string; co
             <Box width={2} flexShrink={0}>
               <Text color={colors.gray}>│ </Text>
             </Box>
-            <Box flexGrow={1}>
+            <Box width={Math.max(1, contentWidth - 2)}>
               {renderTextBlock(block.text, Math.max(1, contentWidth - 2), {
                 color: colors.gray,
                 italic: true,

@@ -41,18 +41,44 @@ function debugInput(kind: string, text: string, total: number): void {
 // ============================================================
 // 日志行
 // ============================================================
+
+/**
+ * 用户消息。
+ *
+ * 必须自己按 `columns - 2` 折行，不能把宽度交给 Yoga：
+ * 日志列表跑在 `<Static>` 里，而 Static 的容器是 `position: absolute` 且没有
+ * width，Yoga 会按内容撑开它 —— 于是 `flexGrow={1}` 的子项拿到的是「终端宽度」
+ * 而不是「终端宽度 - 前缀 2 列」，结果每行都宽出 2 列（80 列终端渲染成 82 列），
+ * 终端再折一次就变成用户看到的「屏幕没满就断」。
+ *
+ * 前缀写进同一个 `<Text>` 而不是并列的兄弟节点，有两个作用：
+ *   1. Ink 折行时会把它算进总宽，不会溢出（项目里 ThoughtBlock/SystemLine 同范式）
+ *   2. 续行用 `'  '` 前缀自然对齐，无需依赖 Box 左边界
+ */
+function UserLine({ item }: { item: LogItem }) {
+  const { columns } = useTerminalSize();
+  const contentWidth = Math.max(10, columns - 2);
+  const lines = wrapLines(item.text, contentWidth);
+
+  return (
+    <Box marginTop={1} flexDirection="column">
+      {lines.map((line, i) => (
+        <Text key={i} bold color={colors.text}>
+          <Text color={colors.gray}>{i === 0 ? '> ' : '  '}</Text>
+          {line || ' '}
+        </Text>
+      ))}
+    </Box>
+  );
+}
+
 function LogLine({ item }: { item: LogItem }) {
   switch (item.kind) {
     case 'welcome':
       return <WelcomeItem item={item} />;
 
     case 'user':
-      return (
-        <Box marginTop={1} flexDirection="row">
-          <Text color={colors.gray}>{'> '}</Text>
-          <Box flexGrow={1}><Text bold color={colors.text}>{item.text}</Text></Box>
-        </Box>
-      );
+      return <UserLine item={item} />;
 
     case 'md':
       return <MarkdownBlock text={item.text} />;
