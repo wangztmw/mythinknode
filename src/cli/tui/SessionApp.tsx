@@ -330,7 +330,10 @@ export function SessionApp({ store }: { store: TuiStore }) {
 
   // 「InputBox 上方有哪些区块」只在这一处判断，同时喂给渲染条件和高度计算。
   // 分成两处判断就会漂移：渲染了状态行但没算高度 → 光标偏上 2 行。
-  const statusVisible = state.busy;
+  // 状态行可见性 = 观察者采到了非 idle 快照。
+  // 注意与 state.busy 解耦：busy 是「主循环在跑」，status 是「观察者看见 agent 在做什么」，
+  // 后者是渲染层自己的判断，不该被 busy 的单点真值绑定。
+  const statusVisible = state.status != null;
   const aboveRows = statusVisible ? ABOVE_BLOCK_HEIGHTS.status : 0;
 
   return (
@@ -345,7 +348,7 @@ export function SessionApp({ store }: { store: TuiStore }) {
 
       {statusVisible && (
         <ErrorBoundary label="status">
-          <ThinkingStatus status={state.status ?? 'Working…'} />
+          <ThinkingStatus status={state.status!} />
         </ErrorBoundary>
       )}
 

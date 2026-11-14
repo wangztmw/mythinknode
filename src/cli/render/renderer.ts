@@ -3,6 +3,8 @@
  * 与输入层（input-buffer）完全解耦；所有终端写入经 ScreenStateLike（主屏 / 备用屏两模式）。
  */
 import type { ProgressEvent, MergedTool } from '../../agent/progress.js';
+import type { RuntimeState } from '../../agent/runtime_state.js';
+import { createSampler } from '../tui/observe.js';
 import { mdToANSI, B, b, C, c } from './ansi.js';
 import { displayWidth, charWidth, wrapLine } from './term-wrap.js';
 import type { ScreenStateLike } from './types.js';
@@ -35,29 +37,13 @@ function renderProgress(event: ProgressEvent, ss: ScreenStateLike): void {
     const wide = cols >= 60;
 
     switch (event.type) {
-      case 'thinking_start': {
-        const name = phaseLabel(event.label);
-        const content = `  ● ${B}${name}${b} (0.0s) — ${trunc(event.label, cols - 25)}`;
-        const leadingNewline = !isFirstThinking;
-        isFirstThinking = false;
-        ss.beginStatus(content, leadingNewline);
-        break;
-      }
-      case 'thinking_tick': {
-        // 窄终端：只显示首帧，抑制中间 tick 防止刷屏
-        if (!wide) break;
-        const s = (event.elapsedMs / 1000).toFixed(1);
-        const isThinking = phaseLabel(event.label) === 'Thinking';
-        const name = trunc(phaseLabel(event.label), cols - 15);  // 工具名可能很长（多工具列表），截断防超长
-        const desc = isThinking ? ` — ${trunc(event.label, cols - 25)}` : '';
-        ss.overwriteStatus(`  ● ${B}${name}${b} (${s}s)${desc}`);
-        break;
-      }
       case 'thinking_end': {
+        // 一次性的历史事实：这一段花了多久 + 产出几个工具。
+        // 状态行的「实时秒数」不再由事件驱动（改由观察者采样 + 自己算，见 observe.ts）。
         const raw = event.elapsedMs / 1000;
-        const s = raw < 0.1 ? '<0.1' : raw.toFixed(1);
+        const sec = raw < 0.1 ? '<0.1' : raw.toFixed(1);
         const hint = event.toolCount > 0 ? ` → ${event.toolCount} tool${event.toolCount > 1 ? 's' : ''}` : '';
-        ss.endStatus(`  ● ${B}Thinking${b} (${s}s) — ${trunc(event.label, cols - 25)}${hint}`);
+        ss.endStatus(`  ● ${B}${phaseLabel(event.label)}${b} (${sec}s)${hint}`);
         break;
       }
       case 'thought': {
@@ -113,30 +99,54 @@ export function createRenderer(ss: ScreenStateLike) {
       ss.writeLines(`Error: ${err}`);
     },
 
-    startRender(engine: { onEvent: (listener: (e: ProgressEvent) => void) => () => void }): () => void {
+    startRender(engine: {
+      onEvent: (listener: (e: ProgressEvent) => void) => () => void;
+      snapshot: () => RuntimeState;
+    }): () => void {
       isFirstThinking = true;  // 每次新查询，重置"第一个 thinking 不换行"标志
-      let pendingTick: ProgressEvent | null = null;
-      let tickTimer: ReturnType<typeof setInterval> | null = null;
 
-      const flushTick = () => {
-        if (!pendingTick) return;
-        const t = pendingTick; pendingTick = null;
-        try { renderProgress(t, ss); } catch { /* 渲染不应崩 */ }
-      };
+      // ★ 观察者（眼睛）：classic 路径同样用采样器，而不是等 agent 每秒播报。
+      // 时间由这里现算（now - startedAt），agent 卡住时数字照涨 → 卡顿可见。
+      const sampler = createSampler(engine);
+      let renderedKey = '';
+      let statusActive = false;
+      const unsubObserve = sampler.subscribe(obs => {
+        const { state, now, sinceChangeMs } = obs;
+        if (state.phase === 'idle') {
+          if (statusActive) { ss.endStatus(''); statusActive = false; renderedKey = ''; }
+          return;
+        }
+        const cols = ss.cols;
+        const startedAt = state.tool?.startedAt ?? state.phaseStartedAt;
+        const sec = ((now - startedAt) / 1000).toFixed(1);
+        const isThinking = state.phase === 'thinking';
+        const main = isThinking ? 'Thinking' : (state.tool?.name ?? state.label);
+        const detail = isThinking ? ` — ${trunc(state.label, cols - 25)}` : '';
+        const warn = sinceChangeMs >= 15_000
+          ? `  ⚠ ${Math.round(sinceChangeMs / 1000)}s 无变化`
+          : (now - startedAt >= 3_000 ? '  仍在进行…' : '');
+        const content = `  ● ${B}${main}${b} (${sec}s)${detail}${warn}`;
+
+        // 只在内容真的变了时重绘（观察者自己决定节奏，不打断 ss 的其它输出）
+        const key = `${main}|${detail}|${sec}|${warn}`;
+        if (key === renderedKey) return;
+        renderedKey = key;
+        const leadingNewline = !statusActive && !isFirstThinking;
+        if (!statusActive) { isFirstThinking = false; ss.beginStatus(content, leadingNewline); statusActive = true; }
+        else ss.overwriteStatus(content);
+      });
 
       const unsub = engine.onEvent((e: ProgressEvent) => {
-        if (e.type === 'thinking_tick') { pendingTick = e; return; } // 连续 tick 只保留最后一条
-        flushTick(); // 非 tick 事件前先刷 tick，保持时间顺序（否则 tick 会插到 thinking_end 之后重复一行）
+        // thinking_end 落成永久行后，状态行交还给采样器
+        if (e.type === 'thinking_end' && statusActive) { statusActive = false; renderedKey = ''; }
         try { renderProgress(e, ss); } catch { /* 渲染不应崩 */ }
       });
 
-      // 镜像旧 pollEvents 的 1s 残量刷新：没有后续非 tick 事件时，也要把最后的 tick 刷出来
-      tickTimer = setInterval(flushTick, 1000);
-
       return () => {
-        if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
-        flushTick();
+        unsubObserve();
+        sampler.dispose();
         unsub();
+        if (statusActive) { try { ss.endStatus(''); } catch { /* 忽略 */ } }
       };
     },
 

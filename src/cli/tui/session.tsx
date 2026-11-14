@@ -12,6 +12,7 @@ import { TuiStore, type LogKind, type LogMeta } from './store.js';
 import { SessionApp } from './SessionApp.js';
 import { collectSnapshot } from './data.js';
 import { WindowSizeProvider } from './layout/window-size.js';
+import { createSampler } from './observe.js';
 import { historyToBlocks } from '../../session/session_history.js';
 import type { ChatMessage } from '../../llm/types.js';
 import { sanitizeOutput } from './text/sanitize.js';
@@ -35,15 +36,13 @@ function seconds(ms: number): string {
   return ms / 1000 < 0.1 ? '<0.1' : (ms / 1000).toFixed(1);
 }
 
-/** 工具名本身就是 label，不再重复追加 detail */
-function statusText(label: string, elapsed: string, hint = ''): string {
-  const phase = phaseLabel(label);
-  const detail = phase === label ? '' : ` — ${label}`;
-  return `${phase} (${elapsed})${detail}${hint}`;
-}
-
 interface EngineEvents {
   onEvent(listener: (event: ProgressEvent) => void): () => void;
+}
+
+/** 观察者的眼睛需要「读快照」能力；不强依赖 AgentEngine 具体类型，便于测试 */
+interface Observable {
+  snapshot(): import('../../agent/runtime_state.js').RuntimeState;
 }
 
 export function createTuiCLI() {
@@ -105,20 +104,31 @@ export function createTuiCLI() {
       store.append('error', `Error: ${sanitizeOutput(err)}`);
     },
 
-    startRender(engine: EngineEvents): () => void {
+    startRender(engine: EngineEvents & Observable): () => void {
+      // ★ 观察者（眼睛）：独立采样 engine 的快照，agent 不知道它在看。
+      // 状态行的时间由渲染层现算（status.tsx 的 formatStatus），不来自 agent。
+      const sampler = createSampler(engine);
+      const unsubObserve = sampler.subscribe((obs) => {
+        const { state } = obs;
+        if (state.phase === 'idle') { store.setStatus(null); return; }
+        const isThinking = state.phase === 'thinking';
+        store.setStatus({
+          main: isThinking ? 'Thinking' : (state.tool?.name ?? state.label),
+          detail: isThinking ? state.label : '',
+          startedAt: state.tool?.startedAt ?? state.phaseStartedAt,
+          lastChangeAt: obs.now - obs.sinceChangeMs,
+        });
+      });
+
       const unsubscribe = engine.onEvent((event: ProgressEvent) => {
         switch (event.type) {
-          case 'thinking_start':
-            store.setStatus(statusText(event.label, '0.0s'));
-            break;
-          case 'thinking_tick':
-            store.setStatus(statusText(event.label, `${(event.elapsedMs / 1000).toFixed(1)}s`));
-            break;
           case 'thinking_end': {
+            // 一次性的历史事实（这一段花了多久、产出几个工具）仍需落成永久日志行，
+            // 但它不再驱动状态行 —— 状态行由采样器接管。
             const hint = event.toolCount > 0
               ? ` → ${event.toolCount} tool${event.toolCount > 1 ? 's' : ''}`
               : '';
-            store.setStatus(statusText(event.label, `${seconds(event.elapsedMs)}s`, hint));
+            store.append('system', `${phaseLabel(event.label)} ${seconds(event.elapsedMs)}s${hint}`);
             break;
           }
           case 'thought': {
@@ -186,6 +196,8 @@ export function createTuiCLI() {
       });
 
       return () => {
+        unsubObserve();
+        sampler.dispose();
         unsubscribe();
         store.setStatus(null);
       };

@@ -10,6 +10,8 @@ export const colors = {
   text: undefined as string | undefined,
   error: 'red',
   code: 'yellow',
+  /** 观察者提示（仍在进行 / 疑似卡住）用黄色，与错误红区分 */
+  warn: 'yellow',
 } as const;
 
 export const spacing = {

@@ -25,13 +25,24 @@ export interface LogItem {
   meta?: LogMeta;
 }
 
+/**
+ * 状态行内容。时间**不**在这里 —— 这里只有「何时开始」，
+ * 由渲染层用 `now - startedAt` 现算，这样 agent 卡住时秒数照涨。
+ */
+export interface StatusView {
+  main: string;
+  detail: string;
+  startedAt: number;
+  lastChangeAt: number;
+}
+
 export interface TuiState {
   log: LogItem[];
   input: string;
   cursor: number;
   busy: boolean;
   waiting: boolean;
-  status: string | null;
+  status: StatusView | null;
   /**
    * 已提交、尚未开始的指令（FIFO）。
    *
@@ -165,7 +176,13 @@ export class TuiStore {
     return !this.state.waiting;
   }
 
-  setStatus(status: string | null): void {
+  setStatus(status: StatusView | null): void {
+    // 相同内容不重复写 lastChangeAt，否则「无变化时长」永远归零 → 卡住检测失效
+    const prev = this.state.status;
+    if (status && prev && status.main === prev.main && status.detail === prev.detail) {
+      this.update({ status: { ...status, lastChangeAt: prev.lastChangeAt } });
+      return;
+    }
     this.update({ status });
   }
 

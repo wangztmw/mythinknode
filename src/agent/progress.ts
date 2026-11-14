@@ -33,8 +33,13 @@ export interface MergedTool {
 }
 
 export type ProgressEvent =
-  | { type: 'thinking_start'; label: string; time: number }
-  | { type: 'thinking_tick'; label: string; elapsedMs: number }
+  /**
+   * ★ 已移除 thinking_start / thinking_tick。
+   *   「当前在 thinking、从何时开始、第几轮」属于**状态**，不是事件 ——
+   *   已迁到 RuntimeState（agent/runtime_state.ts），由观察者按需采样并自己算 elapsed。
+   *   原因：每秒 emit 一次是为了让屏幕上的秒数跳动，等于让 agent 为 UI 刷新率服务；
+   *   而且 agent 一旦卡住，最后那个数字会冻结在屏幕上伪装成实时数据。
+   */
   | { type: 'thinking_end'; label: string; elapsedMs: number; toolCount: number; time: number }
   | { type: 'tool_display'; calls: MergedTool[]; elapsedMs?: number }
   | { type: 'thought'; text: string }

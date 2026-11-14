@@ -32,6 +32,8 @@ export interface MemberState {
 }
 
 import type { ToolCall, MergedTool, ProgressEvent, ToolPreview } from './progress.js';
+import type { RuntimeState } from './runtime_state.js';
+import { idleState } from './runtime_state.js';
 
 // ---- 工具函数 ----
 
@@ -110,6 +112,63 @@ export class AgentEngine {
   private eventListeners = new Set<(e: ProgressEvent) => void>();
   /** 最近一次 LLM 调用的 token 用量（query_loop 内部使用） */
   lastTokenUsage?: { input_tokens: number; output_tokens: number };
+
+  // ---- 被观察者快照（pull 模型）----
+  // agent 只写「事实」：何时进入什么阶段、在跑什么工具。不写「过了多久」。
+  // 观察者（UI/日志/录像）自己采样 + 自己算时间。见 runtime_state.ts 头注释。
+  private state: RuntimeState = idleState();
+
+  /** 读当前快照。纯读、无副作用，任何观察者都可随时调用。 */
+  snapshot(): RuntimeState {
+    // 浅拷贝 + 子 agent 现取，避免调用方改到内部对象
+    return {
+      ...this.state,
+      tool: this.state.tool ? { ...this.state.tool } : undefined,
+      subAgents: [...this.team.values()]
+        .filter(m => m.status === 'running')
+        .map(m => ({ id: m.id, subject: m.subject, status: m.status, startedAt: m.startTime })),
+    };
+  }
+
+  /** agent 内部用：进入某阶段。只记时间戳，不算 elapsed。 */
+  setPhase(phase: RuntimeState['phase'], label: string, round?: number): void {
+    this.state = {
+      ...this.state,
+      phase,
+      phaseStartedAt: Date.now(),
+      label,
+      tool: undefined,
+      ...(round !== undefined ? { round } : {}),
+    };
+  }
+
+  /** agent 内部用：进入工具执行阶段（多个工具名合并展示） */
+  setExecuting(toolName: string): void {
+    const now = Date.now();
+    this.state = {
+      ...this.state,
+      phase: 'executing',
+      phaseStartedAt: now,
+      label: toolName,
+      tool: { name: toolName, startedAt: now },
+    };
+  }
+
+  /** agent 内部用：一轮结束，回到空闲 */
+  resetPhase(): void {
+    this.state = { ...idleState(), tokens: this.state.tokens };
+  }
+
+  /** agent 内部用：累计 token（快照可见，不影响时间派生） */
+  addTokens(input: number, output: number): void {
+    this.state = {
+      ...this.state,
+      tokens: {
+        input: this.state.tokens.input + input,
+        output: this.state.tokens.output + output,
+      },
+    };
+  }
 
   /** 同步广播进度事件。监听器不应抛异常（这里防御性包裹）。 */
   emit(e: ProgressEvent): void {

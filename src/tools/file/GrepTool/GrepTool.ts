@@ -1,5 +1,6 @@
 import { z } from 'zod/v4';
-import { execSync } from 'node:child_process';
+import { runCommand } from '../../exec/run.js';
+import { currentSignal } from '../../../agent/interrupt.js';
 import { buildTool, type ToolUseContext, type ToolResult } from '../../core/Tool.js';
 import { DESCRIPTION } from './prompt.js';
 
@@ -26,17 +27,27 @@ export const GrepTool = buildTool({
     const escPattern = pattern.replace(/'/g, "'\\''");
 
     try {
+      // 异步执行：大仓库里 rg/grep 可能耗时数百 ms ~ 数秒，execSync 期间事件循环停摆。
+      const run = (cmd: string) =>
+        runCommand(cmd, { timeoutMs: 15000, maxBuffer: 2 * 1024 * 1024, signal: currentSignal() });
+
       // Try ripgrep first (.gitignore-aware, faster)
+      const rgCmd = `rg -n --color=never ${ctx} ${inc} '${escPattern}' '${dir.replace(/'/g, "'\\''")}' 2>/dev/null`;
+      const rg = await run(rgCmd);
+      if (rg.signal) return { data: '(aborted)' };
+
       let stdout: string;
-      try {
-        const rgCmd = `rg -n --color=never ${ctx} ${inc} '${escPattern}' '${dir.replace(/'/g, "'\\''")}' 2>/dev/null`;
-        stdout = execSync(rgCmd, { encoding: 'utf-8', timeout: 15000, maxBuffer: 2 * 1024 * 1024 });
-      } catch (e: unknown) {
-        const err = e as { status?: number; stdout?: string; stderr?: string };
-        if (err.status === 1) return { data: '(no matches)' };
-        // ripgrep failed — fall back to grep
+      if (rg.code === 0) {
+        stdout = rg.stdout;
+      } else if (rg.code === 1) {
+        // rg 退出码 1 = 没有匹配（不是失败），不兜底到 grep
+        return { data: '(no matches)' };
+      } else {
         const grepCmd = `grep -rn --color=never ${ctx} ${inc} '${escPattern}' '${dir.replace(/'/g, "'\\''")}' --exclude-dir=node_modules --exclude-dir=.git 2>/dev/null`;
-        stdout = execSync(grepCmd, { encoding: 'utf-8', timeout: 15000, maxBuffer: 2 * 1024 * 1024 });
+        const g = await run(grepCmd);
+        if (g.signal) return { data: '(aborted)' };
+        if (g.code !== 0 && !g.stdout) return { data: '(no matches)' };
+        stdout = g.stdout;
       }
 
       const trimmed = stdout.trim();

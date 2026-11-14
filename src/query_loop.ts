@@ -175,16 +175,24 @@ async function executeTools(
       return { name: b.name!, id: b.id!, input: {}, output };
     }
     if (tool) {
+      // 外层护栏只做「工具实现卡死」的保险，工具自己声明的 timeout 才是权威。
+      // 改前 Bash 默认 120s 但外层 30s 先掐断，用户显式传 timeout: 120000 也没用
+      // （而且 execSync 时代 setTimeout 根本不执行，这个护栏是假的）。
+      // 现在 Bash 自己会 SIGTERM，外层取 max(30s, 声明值 + 5s) 兜底。
+      const declared = typeof (b.input as { timeout?: unknown })?.timeout === 'number'
+        ? (b.input as { timeout: number }).timeout
+        : 0;
+      const callTimeout = Math.max(TOOL_TIMEOUT_MS, declared > 0 ? declared + 5000 : 0);
       try {
         const r = await Promise.race([
           tool.call(b.input || {}, toolContext),
-          // 用户中断：立刻结束等待（工具本身可能还在后台跑，但不能阻塞用户）
+          // 用户中断：立刻结束等待（Bash/Glob/Grep 已接 signal，会真的 SIGTERM 子进程）
           interruptPromise,
           new Promise<{ data: string; _timeout: boolean }>((resolve) =>
             setTimeout(() => resolve({
-              data: `(tool "${b.name!}" still running after ${TOOL_TIMEOUT_MS / 1000}s — agent will check next round)`,
+              data: `(tool "${b.name!}" still running after ${callTimeout / 1000}s — agent will check next round)`,
               _timeout: true,
-            }), TOOL_TIMEOUT_MS)
+            }), callTimeout)
           ),
         ]);
         output = typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
@@ -210,17 +218,13 @@ async function executeTools(
   if (toolUses.length === 0) return { calls: [], interrupted: !!signal?.aborted };
   const toolNames = toolUses.map((b: any) => b.name!).join(', ');
   const toolStart = Date.now();
-  let toolTick: ReturnType<typeof setInterval> | undefined;
 
-  if (!silent) {
-    // 立刻显示工具名（0s）
-    engine.emit({ type: 'thinking_tick', label: toolNames, elapsedMs: 0 });
-
-    // 心跳定时器（1s 心跳，避免高频 \r 覆写刺激 Terminal 渲染层）
-    toolTick = setInterval(() => {
-      engine.emit({ type: 'thinking_tick', label: toolNames, elapsedMs: Date.now() - toolStart });
-    }, 1000);
-  }
+  // ★ 只写快照，不起定时器。观察者自己算 elapsed（见 runtime_state.ts）。
+  // 改前这里每秒 emit 一次 thinking_tick —— agent 在为 UI 刷新率服务，
+  // 而且一旦主线程被阻塞，那个数字会冻结在屏幕上伪装成实时数据。
+  // ★ 观测绝不能反过来打断被执行者：任何自定义 engine（测试 mock、子 agent 精简引擎）
+  // 缺少观察者方法时，这里静默跳过，而不是抛异常把整轮打成 crashed。
+  if (!silent) { try { engine.setExecuting?.(toolNames); } catch { /* 观测失败不影响执行 */ } }
 
   const calls = serial
     ? await toolUses.reduce(async (prev, b) => {
@@ -230,7 +234,6 @@ async function executeTools(
       }, Promise.resolve([] as any[]))
     : await Promise.all(toolUses.map(executeOne));
 
-  if (toolTick) clearInterval(toolTick);
   const elapsed = Date.now() - toolStart;
   if (!silent) engine.emit({ type: 'tool_display', calls: engine.mergeToolCalls(calls), elapsedMs: elapsed });
   return { calls, interrupted: interruptedDuringTools || !!signal?.aborted };
@@ -344,28 +347,21 @@ export async function agentLoop(
     try {
       const thinkStart = Date.now();
       const phase = phaseLabel?.(round, messages[messages.length - 1]?.content) ?? 'processing';
-      let tick: ReturnType<typeof setInterval> | undefined;
-      if (!silent) {
-        engine.emit({ type: 'thinking_start', label: phase, time: thinkStart });
-
-        // 心跳：每 1s 推一个 tick（避免高频 \r 覆写刺激 Terminal）
-        tick = setInterval(() => {
-          engine.emit({ type: 'thinking_tick', label: phase, elapsedMs: Date.now() - thinkStart });
-        }, 1000);
-      }
+      // ★ 写快照，不起定时器。观察者（TUI/classic/日志）按自己的节奏采样 + 自己算 elapsed。
+      if (!silent) { try { engine.setPhase?.('thinking', phase, round); } catch { /* 观测失败不影响执行 */ } }
 
       try {
         response = await engine.llm.chat(messages, params.systemPrompt || engine.systemPrompt, 384000, abortSignal);
         if (response.usage) {
           inputTokens += response.usage.input_tokens;
           outputTokens += response.usage.output_tokens;
+          try { engine.addTokens?.(response.usage.input_tokens, response.usage.output_tokens); } catch { /* 观测失败不影响执行 */ }
         }
-      } finally {
-        if (tick) clearInterval(tick);
-      }
+      } finally { /* 定时器已删除，无需清理 */ }
 
       const elapsedMs = Date.now() - thinkStart;
       const toolCount = (response.content as Array<{ type: string }>).filter(b => b.type === 'tool_use').length;
+      // thinking_end 只携带「这一段花了多久 + 产出几个工具」这一条不可从快照推出的历史事实。
       if (!silent) engine.emit({ type: 'thinking_end', label: phase, elapsedMs, toolCount, time: Date.now() });
     } catch (e) {
       const err = e as Error;

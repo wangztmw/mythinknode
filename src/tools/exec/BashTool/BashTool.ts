@@ -1,7 +1,9 @@
 import { z } from 'zod/v4';
 import * as path from 'node:path';
-import { execSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { buildTool, type ToolUseContext, type ToolResult } from '../../core/Tool.js';
+import { runCommand } from '../run.js';
+import { currentSignal } from '../../../agent/interrupt.js';
 import { DESCRIPTION } from './prompt.js';
 
 const inputSchema = z.object({
@@ -106,30 +108,42 @@ export const BashTool = buildTool({
       return { data: `Background task spawned: ${task.id} ("${description || command.slice(0, 60)}")` };
     }
 
-    try {
-      const stdout = execSync(command, {
-        encoding: 'utf-8',
-        timeout: Math.min(timeout || 120000, 600000),
-        maxBuffer: 10 * 1024 * 1024,
-        cwd: process.cwd(),
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      return { data: stdout || '(completed successfully, no output)' };
-    } catch (e: unknown) {
-      const err = e as {
-        stdout?: Buffer | string; stderr?: Buffer | string;
-        status?: number; signal?: NodeJS.Signals; message?: string;
-      };
-      const out = typeof err.stdout === 'string' ? err.stdout : err.stdout?.toString() || '';
-      const errOut = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString() || '';
+    // 异步执行：不用 execSync。同步执行会阻塞整个 Node 事件循环，
+    // 连带打死心跳 / spinner / 键盘输入 / 中断 / 30s 超时护栏。
+    // 详见 Plan/20261114-1518-async-tools/plan.md。
+    const timeoutMs = Math.min(timeout || 120000, 600000);
+    const r = await runCommand(command, {
+      timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+      // currentSignal() 是「当前这一轮 run」的 signal（每轮新建，不是 engine 上那个长期
+      // abortController —— 那个一旦 abort 会永久为 true，泄漏到后续所有轮次）。
+      // 接上之后 Esc / Ctrl+C 能真正 SIGTERM 掉子进程，而不是只让 agent 不再等待。
+      signal: currentSignal(),
+    });
 
-      if (err.signal) {
-        return { data: `Killed by signal ${err.signal}\nMessage: ${err.message || ''}\nStdout:\n${out}\nStderr:\n${errOut}` };
-      }
+    if (r.timedOut) {
       return {
-        data: `Exit: ${err.status ?? 'unknown'}${err.message ? ' — ' + err.message : ''}\nStdout:\n${out}\nStderr:\n${errOut}`,
+        data: `Killed by signal SIGTERM\nMessage: Command timed out after ${timeoutMs}ms\n`
+          + `Stdout:\n${r.stdout}\nStderr:\n${r.stderr}`,
       };
     }
+    if (r.signal) {
+      return {
+        data: `Killed by signal ${r.signal}\nMessage: process terminated by signal\n`
+          + `Stdout:\n${r.stdout}\nStderr:\n${r.stderr}`,
+      };
+    }
+    if (r.code !== 0) {
+      // 文案结构与 execSync 时代保持一致（模型会读它并据此重试或放弃）
+      return {
+        data: `Exit: ${r.code ?? 'unknown'}\nStdout:\n${r.stdout}\nStderr:\n${r.stderr}`,
+      };
+    }
+    const { stdout } = r;
+    if (r.truncated) {
+      return { data: `${stdout || '(completed successfully, no output)'}\n(truncated: output exceeded 10MB)` };
+    }
+    return { data: stdout || '(completed successfully, no output)' };
   },
 
   isConcurrencySafe: () => false,
