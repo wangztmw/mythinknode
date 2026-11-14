@@ -45,15 +45,18 @@ export const ABOVE_BLOCK_HEIGHTS = {
 /**
  * 队列托盘占用的行数 —— **0 表示不渲染**。
  *
+ * 组成：1 行标题（`待发送 N 条`）+ 最多 QUEUE_VISIBLE_ITEMS 条 + 0/1 行「还有 N 条」。
+ *
  * ⚠️ 这是托盘「是否渲染」与「占几行」的**唯一来源**。
  *    分别在两处判断（渲染处看 queue.length > 0，高度处看 queue.length）会漂移，
  *    一旦漂移就是光标偏上若干行 —— 与之前 ThinkingStatus 那个 bug 同一类（L26）。
  */
 export function queueRows(queueLength: number): number {
   if (queueLength <= 0) return 0;
+  const TITLE_ROWS = 1;
   const shown = Math.min(queueLength, QUEUE_VISIBLE_ITEMS);
   const hasMore = queueLength > QUEUE_VISIBLE_ITEMS ? 1 : 0;
-  return shown + hasMore;
+  return TITLE_ROWS + shown + hasMore;
 }
 
 export function computeInputGeometry(

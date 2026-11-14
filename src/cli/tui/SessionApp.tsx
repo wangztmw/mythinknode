@@ -241,20 +241,30 @@ function QueueTray({ queue }: { queue: string[] }) {
   const { columns } = useTerminalSize();
   if (queue.length === 0) return null;
 
-  // 前缀 '  1. ' 最宽 5 列（两位序号时），留 5 列余量
-  const width = contentWidthOf(columns, 5);
+  // ⚠️ 必须和工具预览视觉区分开：
+  //   工具预览 = `⏺ Bash(args)`（accent 色 + 粗体名字），属于「已经发生过的事」；
+  //   队列     = 「已提交、还没开始执行的事」，跟它长得像会让人误以为在跑。
+  //   于是刻意用了三处不同：
+  //     1. 前缀 `·` 而不是 `⏺`（一个是"待办点"，一个是"已发生的记录"）
+  //     2. magenta 而不是 accent（cyan）
+  //     3. 带「待发送」标题 —— 无色终端下也能看懂，不依赖颜色
+  const PREFIX = '  · ';
+  const width = contentWidthOf(columns, 9);   // 留 9 列给前缀
   const shown = queue.slice(0, QUEUE_VISIBLE_ITEMS);
   const rest = queue.length - shown.length;
 
   return (
-    <Box flexDirection="column" marginTop={0}>
+    <Box flexDirection="column">
+      <Text color={colors.magenta}>
+        {`  待发送 ${queue.length} 条`}
+      </Text>
       {shown.map((text, i) => (
-        <Text key={i} color={colors.gray} wrap="truncate-end">
-          {`  ${i + 1}. `}{truncateToWidth(text, width)}
+        <Text key={i} color={colors.magenta} wrap="truncate-end">
+          {PREFIX}{i + 1}. {truncateToWidth(text, width)}
         </Text>
       ))}
       {rest > 0 && (
-        <Text color={colors.gray}>{`  … 还有 ${rest} 条`}</Text>
+        <Text color={colors.magenta}>{`  … 还有 ${rest} 条`}</Text>
       )}
     </Box>
   );

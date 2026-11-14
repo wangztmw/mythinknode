@@ -273,6 +273,17 @@ async function main() {
       try { stopRender?.(); } catch { /* 退订失败不影响恢复 */ }
       try { cli.renderError((e as Error).message || String(e)); } catch { /* 渲染失败也要继续 */ }
     } finally {
+      // ★ 一轮结束必须把被观察者的快照复位回 idle。
+      //
+      // 漏了这一步的后果（真 bug，已复现）：
+      //   engine.state 停留在上一轮的 'thinking' + 旧的 phaseStartedAt；
+      //   下一轮 startRender() 立刻采样 → 拿到上一轮的时间 → 状态行显示
+      //   `Thinking (7.3s)` 甚至几百秒，然后才被 setPhase 纠正成 0.0s。
+      //   一轮结束到下次提交之间的间隔越长，这个"接上旧时间"的秒数就越大。
+      //
+      // resetPhase() 之所以一直没被调用，是因为它是观察者重构时新增的方法，
+      // 加在 agent_def.ts 里但没人接 —— 典型的"写了但没接上"（L29 同类）。
+      try { engine.resetPhase?.(); } catch { /* 观测失败不影响收尾 */ }
       // 一轮结束：撤掉中断接管，Ctrl+C 恢复「退出」语义。
       try { cli.setInterruptHandler?.(null); } catch { /* 忽略 */ }
       if (!useTui) process.off('SIGINT', onSigint);
