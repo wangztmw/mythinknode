@@ -25,8 +25,21 @@ export function toolVisibleLines(bp: Breakpoint): number {
   return bp.compact ? 4 : 6;
 }
 
-export function hintText(bp: Breakpoint): string {
-  return bp.narrow
-    ? 'Enter 发送 · Ctrl+C 退出'
-    : 'Enter 发送 · ↑↓ 历史 · Ctrl+U 清行 · Ctrl+W 删词';
+/** 队列托盘最多显示几条（固定上限，不随终端高度变化，避免矮屏把输入框挤出可视区） */
+export const QUEUE_VISIBLE_ITEMS = 3;
+
+/**
+ * 底部提示行。
+ *
+ * `running` 必须换文案：运行中按 Enter 不是「立刻发出去」而是「入队」，
+ * 不写清楚用户会以为按键失灵。`queued > 0` 时额外给出清空出口。
+ */
+export function hintText(bp: Breakpoint, opts: { running: boolean; queued: number }): string {
+  const queueHint = opts.queued > 0 ? ` · 队列 ${opts.queued} 条（Ctrl+X 清空）` : '';
+  if (bp.narrow) {
+    return opts.running ? `Enter 排队${queueHint}` : `Enter 发送${queueHint}`;
+  }
+  return opts.running
+    ? `Enter 排队发送 · Esc 中断 · Ctrl+U 清行${queueHint}`
+    : `Enter 发送 · ↑↓ 历史 · Ctrl+U 清行 · Ctrl+W 删词${queueHint}`;
 }

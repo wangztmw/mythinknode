@@ -9,7 +9,7 @@ import { TuiStore, type LogItem } from './store.js';
 import { colors } from './theme.js';
 import { getBreakpoint } from './layout/breakpoints.js';
 import { computeInputGeometry } from './layout/geometry.js';
-import { hintText, inputLines } from './layout/limits.js';
+import { hintText, inputLines, QUEUE_VISIBLE_ITEMS } from './layout/limits.js';
 import { useTerminalSize } from './layout/window-size.js';
 import { cursorLineColumn, wrapLines } from './text/wrap.js';
 import { contentWidth as contentWidthOf, truncateToWidth } from './text/width.js';
@@ -146,7 +146,14 @@ function computeInputView(
   };
 }
 
-function InputBox({ value, cursor }: { value: string; cursor: number }) {
+function InputBox(
+  { value, cursor, running, queued }: {
+    value: string;
+    cursor: number;
+    running: boolean;
+    queued: number;
+  },
+) {
   const { columns, rows } = useTerminalSize();
   const bp = getBreakpoint(columns, rows);
   const geometry = computeInputGeometry(columns, bp);
@@ -163,22 +170,28 @@ function InputBox({ value, cursor }: { value: string; cursor: number }) {
   const belowCount = view.totalLines - view.start - view.lines.length;
   const belowLabel = bp.narrow ? `+${belowCount}` : `还有 ${belowCount} 行`;
 
+  // 运行中边框换成灰色：不是「不可用」，而是「现在提交会入队」。颜色是唯一不占宽度的提示。
+  const borderColor = running ? colors.gray : colors.accent;
+  const emptyHint = running
+    ? truncateToWidth('运行中，输入会在本轮结束后接着发送', geometry.textWidth)
+    : truncateToWidth('Try “解释这个仓库的结构”', geometry.textWidth);
+
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box
         borderStyle="round"
-        borderColor={colors.accent}
+        borderColor={borderColor}
         paddingX={geometry.paddingX}
         width="100%"
       >
         <Box width={geometry.promptWidth} flexShrink={0}>
-          <Text color={colors.accent} bold>{PROMPT}</Text>
+          <Text color={borderColor} bold>{PROMPT}</Text>
         </Box>
         <Box flexDirection="column" flexGrow={1}>
           {value.length === 0
             ? (
               <Text color={colors.gray} wrap="truncate-end">
-                {truncateToWidth('Try “解释这个仓库的结构”', geometry.textWidth)}
+                {emptyHint}
               </Text>
             )
             : (
@@ -193,9 +206,45 @@ function InputBox({ value, cursor }: { value: string; cursor: number }) {
         </Box>
       </Box>
       <Box justifyContent="space-between" marginTop={0}>
-        <Text color={colors.gray}>{hintText(bp)}</Text>
+        <Text color={colors.gray}>{hintText(bp, { running, queued })}</Text>
         {!bp.narrow && <Text color={colors.gray}>Ctrl+C 退出</Text>}
       </Box>
+    </Box>
+  );
+}
+
+// ============================================================
+// 队列托盘
+// ============================================================
+/**
+ * 待发送指令的托盘 —— 渲染在输入框**下方**，不是上方。
+ *
+ * 放上方会让输入框整体下移，`InputBox` 的 `setCursorPosition` 就必须加偏移，
+ * 而 `computeInputGeometry.inputY` 是布局数学的单一来源，为一个可选区块改它不值得。
+ * 放下方只是末尾多几行，光标位置完全不变 —— 零布局风险。
+ *
+ * 宽度按 L23/L24 的结论自己算（`contentWidth`），不交给 Yoga；
+ * 行内用 `truncateToWidth` 兜底，保证任何终端宽度都不溢出。
+ */
+function QueueTray({ queue }: { queue: string[] }) {
+  const { columns } = useTerminalSize();
+  if (queue.length === 0) return null;
+
+  // 前缀 '  1. ' 最宽 5 列（两位序号时），留 5 列余量
+  const width = contentWidthOf(columns, 5);
+  const shown = queue.slice(0, QUEUE_VISIBLE_ITEMS);
+  const rest = queue.length - shown.length;
+
+  return (
+    <Box flexDirection="column" marginTop={0}>
+      {shown.map((text, i) => (
+        <Text key={i} color={colors.gray} wrap="truncate-end">
+          {`  ${i + 1}. `}{truncateToWidth(text, width)}
+        </Text>
+      ))}
+      {rest > 0 && (
+        <Text color={colors.gray}>{`  … 还有 ${rest} 条`}</Text>
+      )}
     </Box>
   );
 }
@@ -224,7 +273,16 @@ export function SessionApp({ store }: { store: TuiStore }) {
       store.forceExit();
       return;
     }
-    if (!state.waiting) return;
+    // Ctrl+X：只清队列，不打断当前轮。没有它就只能在「中断再重来」之间二选一。
+    if (key.ctrl && input === 'x') {
+      const n = store.clearQueue();
+      if (n > 0) store.append('system', `✕ 已清空队列（${n} 条，按 ↑ 可找回）`);
+      return;
+    }
+
+    // ⚠️ 这里**不能**再拦 `if (!state.waiting) return`。
+    // 运行中也要能打字：Enter 入队，由 store.readLine() 在当前轮结束后取走。
+    // 曾经这行是「输入框整个消失」的根源（见 Plan/20261114-1134-tui-command-queue）。
 
     if (key.return) store.submit();
     else if (key.leftArrow) store.moveLeft();
@@ -254,11 +312,12 @@ export function SessionApp({ store }: { store: TuiStore }) {
     }
   });
 
-  // 粘贴整段文本（含换行），避免被拆成回车提前提交
+  // 粘贴整段文本（含换行），避免被拆成回车提前提交。
+  // 运行中同样允许粘贴（入队），否则「先写好三条指令再贴进来」这个用法就没了。
   usePaste((text) => {
     debugInput('paste', text, state.input.length);
-    if (state.waiting) store.insert(text);
-  }, { isActive: state.waiting });
+    store.insert(text);
+  }, { isActive: true });
 
   return (
     <Box flexDirection="column">
@@ -276,11 +335,22 @@ export function SessionApp({ store }: { store: TuiStore }) {
         </ErrorBoundary>
       )}
 
-      {state.waiting && (
-        <ErrorBoundary label="input">
-          <InputBox value={state.input} cursor={state.cursor} />
-        </ErrorBoundary>
-      )}
+      {/* 输入框常驻：运行中也显示，因为此刻用户恰好最有空敲下一条指令。
+          改前是 `{state.waiting && <InputBox/>}` —— 一轮开始输入框整个消失，
+          用户想补充一句只能干等几十秒（见 Plan/20261114-1134-tui-command-queue）。 */}
+      <ErrorBoundary label="input">
+        <InputBox
+          value={state.input}
+          cursor={state.cursor}
+          running={state.busy}
+          queued={state.queue.length}
+        />
+      </ErrorBoundary>
+
+      {/* 托盘放在输入框下方：光标位置不变，零布局风险 */}
+      <ErrorBoundary label="queue">
+        <QueueTray queue={state.queue} />
+      </ErrorBoundary>
     </Box>
   );
 }

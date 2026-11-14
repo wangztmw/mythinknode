@@ -32,6 +32,14 @@ export interface TuiState {
   busy: boolean;
   waiting: boolean;
   status: string | null;
+  /**
+   * 已提交、尚未开始的指令（FIFO）。
+   *
+   * 为什么需要：`waiting` 只表示「主循环是否阻塞在 readLine 上」，但输入能力
+   * 不应跟着它走 —— agent 跑一轮动辄几十秒，用户此刻恰好最有空说话。
+   * 所以运行中打字不再被丢弃，按 Enter 入队，当前轮结束后由 readLine() 取队首。
+   */
+  queue: string[];
 }
 
 const EMPTY: TuiState = {
@@ -41,6 +49,7 @@ const EMPTY: TuiState = {
   busy: false,
   waiting: false,
   status: null,
+  queue: [],
 };
 
 export class TuiStore {
@@ -114,6 +123,10 @@ export class TuiStore {
   /**
    * 请求中断当前行动（Esc / 运行中 Ctrl+C）。
    *
+   * 中断的语义是「停止一切在途工作」，所以队列也一并取消 —— 否则用户按了 Esc，
+   * 下一轮的排队指令立刻接上跑，看起来就像中断失效。
+   * 但「取消」不等于「销毁」：入队时已写进 history，`↑` 一次就能召回重发。
+   *
    * @returns true = 有正在执行的一轮被打断；false = 当前空闲（调用方应走退出路径）
    */
   requestInterrupt(): boolean {
@@ -125,8 +138,26 @@ export class TuiStore {
     if (handled) {
       // 给用户即时反馈：按键是有响应的，不是没反应
       this.append('system', '⏹ 正在中断当前行动…');
+      const dropped = this.clearQueue();
+      if (dropped > 0) {
+        this.append('system', `⏹ 队列中 ${dropped} 条已取消（按 ↑ 可找回）`);
+      }
     }
     return handled;
+  }
+
+  /**
+   * 清空待发送队列（Ctrl+X）。
+   *
+   * 提供这个出口是因为：运行中想重写队列，否则只能「中断 → 重打」，
+   * 而中断会连带打断正在做的事。取消的条目仍在 history 里，`↑` 可召回。
+   *
+   * @returns 清掉的条数
+   */
+  clearQueue(): number {
+    const n = this.state.queue.length;
+    if (n > 0) this.update({ queue: [] });
+    return n;
   }
 
   /** 是否正在执行一轮（waiting=false 且非退出态） */
@@ -138,37 +169,67 @@ export class TuiStore {
     this.update({ status });
   }
 
-  /** 主循环调用：等待用户提交一行 */
+  /**
+   * 主循环调用：等待用户提交一行。
+   *
+   * **队列优先**：上一轮运行期间排队的指令在这里被消费，用户不需要再按一次回车。
+   * 把「队列」藏在 readLine() 内部，主循环的 `while(true)` 与 6 个 continue 分支
+   * 一行都不用改 —— 复杂度留在唯一入口，比在每个分支加判断可靠得多。
+   */
   readLine(): Promise<string> {
     this.historyIdx = -1;
+    const next = this.state.queue[0];
+    if (next !== undefined) {
+      this.update({ queue: this.state.queue.slice(1), waiting: false, status: null });
+      // 真正出队时才写日志。入队时不写：中断会清空队列，而 <Static> 已打印的行
+      // 无法回改，日志里留下「说过但从未被处理」的消息比少一行更失真。
+      this.appendBlock('user', next);
+      return Promise.resolve(next);
+    }
     this.update({ waiting: true, status: null });
     return new Promise(resolve => { this.resolveLine = resolve; });
   }
 
-  /** 提交当前输入（回车） */
+  /** 提交当前输入（回车）：空闲时直接投递，运行中入队 */
   submit(): void {
     const text = this.state.input;
-    if (!text.trim() || !this.resolveLine) return;
-    const resolve = this.resolveLine;
-    // 先摘掉 resolveLine：即使下面渲染抛异常，也不会出现「await 被两份 resolve」。
-    this.resolveLine = null;
-    try {
-      this.history.push(text);
-      this.historyIdx = -1;
-      this.update({ waiting: false, input: '', cursor: 0, status: null });
-      this.appendBlock('user', text);
-    } finally {
-      // ⚠️ resolve 必须无条件执行：它是主循环 `await cli.readLine()` 的唯一唤醒源。
-      // 渲染/日志抛异常时若不 resolve，主循环就永久挂起，waiting 停在 false，
-      // 表现为「终端还能动但打不了字」（与主循环逃逸是同一个症状）。
-      resolve(text);
+    if (!text.trim()) return;
+
+    // 先进历史：中断取消队列时靠 ↑ 找回，这条不能省
+    this.history.push(text);
+    this.historyIdx = -1;
+
+    if (this.resolveLine) {
+      const resolve = this.resolveLine;
+      // 先摘掉 resolveLine：即使下面渲染抛异常，也不会出现「await 被两份 resolve」。
+      this.resolveLine = null;
+      try {
+        this.update({ waiting: false, input: '', cursor: 0, status: null });
+        this.appendBlock('user', text);
+      } finally {
+        // ⚠️ resolve 必须无条件执行：它是主循环 `await cli.readLine()` 的唯一唤醒源。
+        // 渲染/日志抛异常时若不 resolve，主循环就永久挂起，waiting 停在 false，
+        // 表现为「终端还能动但打不了字」（与主循环逃逸是同一个症状）。
+        resolve(text);
+      }
+      return;
     }
+
+    // 运行中（或恰好处于 readLine 返回后的极短窗口）：入队，等下一个人 readLine() 取走
+    this.update({ input: '', cursor: 0, status: null, queue: [...this.state.queue, text] });
   }
 
   // ---- 行编辑 ----
 
+  /**
+   * 是否可以编辑输入行。
+   *
+   * 改前是 `waiting && resolveLine != null` —— 运行中输入框整个被卸载。
+   * 现在运行中也要能打字（入队），所以闸门只看「有没有正在收单的 readLine」，
+   * 不再看主循环忙不忙。
+   */
   private editing(): boolean {
-    return this.state.waiting && this.resolveLine != null;
+    return this.state.waiting ? this.resolveLine != null : true;
   }
 
   insert(text: string): void {
