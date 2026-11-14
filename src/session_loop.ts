@@ -118,31 +118,50 @@ export async function runSession(
   const currentLen = session.messages.length;
   if (taskStartLen < 0) taskStartLen = currentLen;
 
+  // ★ 立刻进入 thinking 阶段：三条召回各自可能是一次 LLM 往返（云端 1~3s），
+  //   改前要等它们全部跑完、进入 agentLoop 才 setPhase，用户按了回车后
+  //   屏幕上**什么都没有**好几秒，然后计时从 0 开始 —— 体感像卡住了。
+  //   现在一进入 runSession 就让观察者看到「开始干活了」。
+  //   注：setPhase 在同一 phase 内不会重置计时起点（见 AgentEngine.setPhase），
+  //   所以随后 agentLoop 的 setPhase('thinking','analyzing') 不会让数字跳回 0。
+  try { engine.setPhase?.('thinking', 'recalling context'); } catch { /* 观测失败不影响执行 */ }
+
   // ★ MessageReminder: 召回历史上下文，组装增强视图（不污染 session.messages）
+  //   ★ 三条召回彼此独立（互不依赖对方的输出）→ 并发执行。
+  //     改前是三个串行 await，最坏情况 3 × LLM 往返全部叠加在用户按下回车之后。
   let queryMessages: ChatMessage[] = session.messages;
   let queryBaseLen = session.messages.length;
-  try {
-    const recall = await reminder.recall(userInput, session.keywordIndex, session.id);
+  const [reminderRes, nodemindRes, traitRes] = await Promise.allSettled([
+    reminder.recall(userInput, session.keywordIndex, session.id),
+    nodemind.navigator.search(userInput, engine.llm),
+    recallTraits(userInput, session.id, engine.llm),
+  ]);
+
+  // 按固定顺序装配（并发只是提速，注入顺序保持与原串行版一致，便于复现与排查）
+  if (reminderRes.status === 'fulfilled') {
+    const recall = reminderRes.value;
     if (recall.tags.length > 0) {
       queryMessages = buildBackground(session.messages, recall);
       queryBaseLen = queryMessages.length;
     }
-  } catch (e) { console.error('[MessageReminder] failed:', (e as Error).message); }
+  } else {
+    console.error('[MessageReminder] failed:', (reminderRes.reason as Error)?.message);
+  }
 
-  // ★ Pre-query: NodeMind 检索相关知识并注入上下文
-  try {
-    const knowledge = await nodemind.navigator.search(userInput, engine.llm);
+  if (nodemindRes.status === 'fulfilled') {
+    const knowledge = nodemindRes.value;
     if (knowledge) {
       queryMessages.push({
         role: 'user',
         content: `[NODE MIND — relevant past experience]\n${knowledge}\n\nUse Knowledge(action='search') to explore deeper, or Knowledge(action='browse') to see available topics.`
       });
     }
-  } catch (e) { console.error('[NodeMind] PreNavigator failed:', (e as Error).message); }
+  } else {
+    console.error('[NodeMind] PreNavigator failed:', (nodemindRes.reason as Error)?.message);
+  }
 
-  // ★ Pre-query: traitGraph 召回之前的思考轨迹并注入上下文
-  try {
-    const traitRecall = await recallTraits(userInput, session.id, engine.llm);
+  if (traitRes.status === 'fulfilled') {
+    const traitRecall = traitRes.value;
     if (traitRecall.nodes.length > 0) {
       const body = traitRecall.nodes.map(n => renderNode(n)).join('\n\n---\n\n');
       queryMessages.push({
@@ -150,7 +169,9 @@ export async function runSession(
         content: `[TRAIT GRAPH — your earlier thinking-execution trail in this session]\n${body}\n\nUse TraitGraph(action='status') to see the full current graph, or TraitGraph(action='plan'|'step'|'backtrack') to continue recording.`
       });
     }
-  } catch (e) { console.error('[TraitGraph] recall failed:', (e as Error).message); }
+  } else {
+    console.error('[TraitGraph] recall failed:', (traitRes.reason as Error)?.message);
+  }
 
   // 中断范围 = 这一整轮（LLM 调用 + 工具执行 + 循环）。
   // handle 在 finally 里 endRun，保证下一轮拿到干净的 signal（未 abort 的新 controller）。

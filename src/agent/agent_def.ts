@@ -130,14 +130,24 @@ export class AgentEngine {
     };
   }
 
-  /** agent 内部用：进入某阶段。只记时间戳，不算 elapsed。 */
+  /**
+   * agent 内部用：进入某阶段。只记时间戳，不算 elapsed。
+   *
+   * ⚠️ 同一 phase 内重复调用**不重置** `phaseStartedAt`。
+   *    场景：runSession 开头先 `setPhase('thinking', 'recalling context')`（让状态行
+   *    立刻出现），随后 agentLoop 再 `setPhase('thinking', 'analyzing')`。
+   *    若这里无条件重置，秒数会从「准备用了 2.3s」跳回「0.1s」—— 看起来像计时器抽风。
+   *    保持连续后，用户看到的是「本轮从按下回车到现在用了多久」，语义更稳。
+   *    phase 真正变化（thinking → executing → thinking）时才重置，那时阶段确实换了。
+   */
   setPhase(phase: RuntimeState['phase'], label: string, round?: number): void {
+    const samePhase = this.state.phase === phase;
     this.state = {
       ...this.state,
       phase,
-      phaseStartedAt: Date.now(),
+      phaseStartedAt: samePhase ? this.state.phaseStartedAt : Date.now(),
       label,
-      tool: undefined,
+      tool: samePhase ? this.state.tool : undefined,
       ...(round !== undefined ? { round } : {}),
     };
   }
