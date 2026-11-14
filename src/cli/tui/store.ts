@@ -191,13 +191,18 @@ export class TuiStore {
     this.historyIdx = -1;
     const next = this.state.queue[0];
     if (next !== undefined) {
-      this.update({ queue: this.state.queue.slice(1), waiting: false, status: null });
+      // ⚠️ 刻意不清 status：状态行的可见性**只由观察者决定**（采样器看到 phase=idle 才清）。
+      //    用户的操作（提交/出队/等待输入）不该干预「agent 此刻在做什么」的显示 ——
+      //    清掉会让 ThinkingStatus 卸载再挂载，心跳与 spinner 从头开始，看起来像被打断。
+      //    一轮真正结束时由 startRender 的 cleanup 统一清（那里才有权说「这一轮看完了」）。
+      this.update({ queue: this.state.queue.slice(1), waiting: false });
       // 真正出队时才写日志。入队时不写：中断会清空队列，而 <Static> 已打印的行
       // 无法回改，日志里留下「说过但从未被处理」的消息比少一行更失真。
       this.appendBlock('user', next);
       return Promise.resolve(next);
     }
-    this.update({ waiting: true, status: null });
+    // 同上：不清 status。留一行注释说明这里曾经清过。
+    this.update({ waiting: true });
     return new Promise(resolve => { this.resolveLine = resolve; });
   }
 
@@ -215,7 +220,7 @@ export class TuiStore {
       // 先摘掉 resolveLine：即使下面渲染抛异常，也不会出现「await 被两份 resolve」。
       this.resolveLine = null;
       try {
-        this.update({ waiting: false, input: '', cursor: 0, status: null });
+        this.update({ waiting: false, input: '', cursor: 0 });
         this.appendBlock('user', text);
       } finally {
         // ⚠️ resolve 必须无条件执行：它是主循环 `await cli.readLine()` 的唯一唤醒源。
@@ -227,7 +232,9 @@ export class TuiStore {
     }
 
     // 运行中（或恰好处于 readLine 返回后的极短窗口）：入队，等下一个人 readLine() 取走
-    this.update({ input: '', cursor: 0, status: null, queue: [...this.state.queue, text] });
+    // 入队时绝不清 status：这一轮还在跑，状态行必须继续走字。
+    // 改前这里清 status → 每次排队点回车，心跳都会闪一下并从头计。
+    this.update({ input: '', cursor: 0, queue: [...this.state.queue, text] });
   }
 
   // ---- 行编辑 ----

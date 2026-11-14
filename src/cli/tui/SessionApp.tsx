@@ -241,30 +241,28 @@ function QueueTray({ queue }: { queue: string[] }) {
   const { columns } = useTerminalSize();
   if (queue.length === 0) return null;
 
-  // ⚠️ 必须和工具预览视觉区分开：
-  //   工具预览 = `⏺ Bash(args)`（accent 色 + 粗体名字），属于「已经发生过的事」；
-  //   队列     = 「已提交、还没开始执行的事」，跟它长得像会让人误以为在跑。
-  //   于是刻意用了三处不同：
-  //     1. 前缀 `·` 而不是 `⏺`（一个是"待办点"，一个是"已发生的记录"）
-  //     2. magenta 而不是 accent（cyan）
-  //     3. 带「待发送」标题 —— 无色终端下也能看懂，不依赖颜色
-  const PREFIX = '  · ';
-  const width = contentWidthOf(columns, 9);   // 留 9 列给前缀
+  // 队列 = 「我说了、但还没轮到执行的话」。
+  // 与工具预览（`⏺ Bash(...)`，「已经发生过的事」）的区分靠**结构**而不是颜色：
+  //   1. 前缀 `›` —— 和输入框里的提示符同形，表示「这也是我要发的消息」
+  //   2. 整块只有 gray 一种颜色（工具预览是 accent + bold 名字）
+  //   3. 上下留空行分隔（marginTop 1 + InputBox 自带 marginTop 1）
+  //   4. 不加序号、不加标题 —— 位置本身就是顺序，标题只会制造视觉噪音
+  //
+  // 之前试过「待发送 N 条」标题 + 洋红色 + `·` 前缀，太吵。学 Claude Code：
+  // 用留白和字色区分，信息靠位置，不靠标签。
+  const width = contentWidthOf(columns, 5);   // 前缀 '  › ' = 4 列
   const shown = queue.slice(0, QUEUE_VISIBLE_ITEMS);
   const rest = queue.length - shown.length;
 
   return (
-    <Box flexDirection="column">
-      <Text color={colors.magenta}>
-        {`  待发送 ${queue.length} 条`}
-      </Text>
+    <Box flexDirection="column" marginTop={1}>
       {shown.map((text, i) => (
-        <Text key={i} color={colors.magenta} wrap="truncate-end">
-          {PREFIX}{i + 1}. {truncateToWidth(text, width)}
+        <Text key={i} color={colors.gray} wrap="truncate-end">
+          {'  › '}{truncateToWidth(text, width)}
         </Text>
       ))}
       {rest > 0 && (
-        <Text color={colors.magenta}>{`  … 还有 ${rest} 条`}</Text>
+        <Text color={colors.gray}>{`    … 还有 ${rest} 条`}</Text>
       )}
     </Box>
   );
