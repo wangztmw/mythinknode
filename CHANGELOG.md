@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.1 (2026-11-14)
+
+修复：
+
+- **按回车后要等好几秒才开始计时** —— 按下回车后屏幕上什么都没有，好几秒后才出现 `✻ Thinking (0.1s)`，且计时从 0 开始，体感像卡住了。实测（假 LLM 每次 0.8s）定位到两个独立病因：
+  - ① `runSession` 在进入 `agentLoop` 之前有**三条串行的召回调用**（`MessageReminder` / `NodeMind` / `TraitGraph`），每条都可能是一次完整的 LLM 往返，总耗时 = 三者之和。实测 `NodeMind.search` 836ms + `TraitGraph.recall` 837ms 全部叠加在按回车之后。三者互不依赖（只共享用户输入与会话 id），串行属纯浪费 → 改为 `Promise.allSettled` 并发。
+    - 用 `allSettled` 而非 `all`：改前三者是各自独立的 `try/catch`，任一条失败只丢那一条。`Promise.all` 会在任一 reject 时整体 reject，另外两条已得到的结果全部丢弃 —— 那是行为回退。
+    - 装配顺序保持 `reminder → nodemind → trait`：`reminder.recall` 会替换整个 `queryMessages` 数组，若它最后完成会覆盖掉已追加的 nodemind / trait 内容。**并发执行，顺序装配。**
+  - ② `setPhase` 要到 `agentLoop` 才第一次调用。召回期间 `engine.state.phase` 仍是 `idle`，观察者按 idle 处理即清空状态行 → 那几秒屏幕全空，且完全不计入计时 → 进入 `runSession` 就 `setPhase('thinking', 'recalling context')`。
+  - 配套修改 `setPhase`：**同一 phase 内不再重置 `phaseStartedAt`**。否则 `recalling context` → `analyzing` 会让秒数从 2.5s 跳回 0.1s，看起来像计时器抽风。语义纠正为「进入这个阶段的时刻」，而非「最后一次调 setPhase 的时刻」。
+  - 真终端 A/B：按 Enter → 状态行出现 **2792ms → 313ms（8.9 倍）**；`Thinking (2.5s) · recalling context` → `Thinking (2.6s) · analyzing`，数字连续递增不跳回。
+
+性能：
+
+- 三条前置召回并行执行，等待时间从「三者之和」降为「最慢那条」。
+
 ## 1.4.0 (2026-11-14)
 
 自 1.3.1 以来：工具改为异步执行（不再阻塞界面），状态面板重构为「观察者拉取」模型，以及一批 TUI 体验修正。
