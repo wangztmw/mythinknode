@@ -8,7 +8,7 @@ import { Box, Static, Text, useCursor, useInput, usePaste } from 'ink';
 import { TuiStore, type LogItem } from './store.js';
 import { colors } from './theme.js';
 import { getBreakpoint } from './layout/breakpoints.js';
-import { computeInputGeometry } from './layout/geometry.js';
+import { computeInputGeometry, ABOVE_BLOCK_HEIGHTS } from './layout/geometry.js';
 import { hintText, inputLines, QUEUE_VISIBLE_ITEMS } from './layout/limits.js';
 import { useTerminalSize } from './layout/window-size.js';
 import { cursorLineColumn, wrapLines } from './text/wrap.js';
@@ -147,16 +147,25 @@ function computeInputView(
 }
 
 function InputBox(
-  { value, cursor, running, queued }: {
+  { value, cursor, running, queued, aboveRows }: {
     value: string;
     cursor: number;
     running: boolean;
     queued: number;
+    /**
+     * 动态区域里本组件**上方**占用的行数（状态行等）。
+     *
+     * ⚠️ 必须与真实渲染条件同源。之前这里没有这个参数、`inputY` 硬编码 2，
+     * 于是 busy 时多出来的 ThinkingStatus（2 行）没被算进去，光标偏上 2 行 ——
+     * 表现为「发完消息再打字，光标不在输入框里」。
+     * 改前发现不了是因为 busy 时输入框整个不渲染，错误值从未被使用。
+     */
+    aboveRows: number;
   },
 ) {
   const { columns, rows } = useTerminalSize();
   const bp = getBreakpoint(columns, rows);
-  const geometry = computeInputGeometry(columns, bp);
+  const geometry = computeInputGeometry(columns, bp, aboveRows);
   const view = computeInputView(value, cursor, geometry.textWidth, rows);
   const { setCursorPosition } = useCursor();
 
@@ -319,6 +328,11 @@ export function SessionApp({ store }: { store: TuiStore }) {
     store.insert(text);
   }, { isActive: true });
 
+  // 「InputBox 上方有哪些区块」只在这一处判断，同时喂给渲染条件和高度计算。
+  // 分成两处判断就会漂移：渲染了状态行但没算高度 → 光标偏上 2 行。
+  const statusVisible = state.busy;
+  const aboveRows = statusVisible ? ABOVE_BLOCK_HEIGHTS.status : 0;
+
   return (
     <Box flexDirection="column">
       <Static items={state.log}>
@@ -329,7 +343,7 @@ export function SessionApp({ store }: { store: TuiStore }) {
         )}
       </Static>
 
-      {state.busy && (
+      {statusVisible && (
         <ErrorBoundary label="status">
           <ThinkingStatus status={state.status ?? 'Working…'} />
         </ErrorBoundary>
@@ -344,6 +358,7 @@ export function SessionApp({ store }: { store: TuiStore }) {
           cursor={state.cursor}
           running={state.busy}
           queued={state.queue.length}
+          aboveRows={aboveRows}
         />
       </ErrorBoundary>
 

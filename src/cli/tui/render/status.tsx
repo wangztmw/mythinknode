@@ -19,7 +19,11 @@ export function ThinkingStatus({ status }: { status: string }) {
     return () => clearInterval(timer);
   }, []);
 
-  const [main, detail] = status.split(' — ');
+  // ⚠️ 必须恒为 1 行：这个组件在 InputBox 上方，高度被
+  // ABOVE_BLOCK_HEIGHTS.status 硬编码为 2（marginTop + 1 行）。
+  // 若状态文本里混入换行（异常/多行 label），Text 会折成多行 →
+  // 多出来的行没被算进光标定位 → 光标偏上。所以换行先压成空格。
+  const [main, detail] = status.replace(/[\r\n]+/g, ' ').split(' — ');
   const text = detail ? `${main} · ${detail}` : main;
 
   return (
