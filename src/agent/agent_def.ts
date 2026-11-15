@@ -5,7 +5,7 @@
  */
 import type { Tool, Tools, ToolUseContext } from '../tools/core/Tool.js';
 import type { LLMClient, ChatMessage } from '../llm/types.js';
-import { ConfigStore } from '../config.js';
+import { readUserMemory } from '../config.js';
 
 // ---- Agent 状态表 ----
 
@@ -199,7 +199,7 @@ export class AgentEngine {
     tools: Tools,
   ) {
     this.llm = llm;
-    this.userMemory = new ConfigStore().loadMemory();
+    this.userMemory = readUserMemory();
     this.toolMap = new Map(tools.map(t => [t.name, t]));
     this.toolContext = {
       options: { tools, verbose: false, isNonInteractiveSession: false, mainLoopModel: 'default', debug: false },

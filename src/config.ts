@@ -100,13 +100,9 @@ export class ConfigStore {
     } catch { /* 静默失败 */ }
   }
 
-  /** 加载用户记忆 */
+  /** 加载用户记忆（实例方法，等价于 readUserMemory()） */
   loadMemory(): string {
-    try {
-      const p = join(ConfigStore._dir(), 'MYTHINKNODE.md');
-      if (!existsSync(p)) return '';
-      return readFileSync(p, 'utf-8').trim();
-    } catch { return ''; }
+    return readUserMemory();
   }
 
   /** 写入用户记忆 */
@@ -136,4 +132,23 @@ export class ConfigStore {
 // 向后兼容导出（tools/search/WebSearchTool 等还在用 loadConfig）
 export function loadConfig(): { tavilyApiKey?: string } {
   return ConfigStore._loadFile();
+}
+
+/**
+ * 读用户记忆文件（~/.mythinknode/MYTHINKNODE.md）。
+ *
+ * 独立于 `ConfigStore` 存在，因为**读这个文件不需要任何凭据**。
+ * `ConfigStore` 构造会走 `resolve()` —— 缺 API key 时直接 `process.exit(1)`。
+ * 之前 `AgentEngine` 为了读记忆而无条件 `new ConfigStore()`，导致：
+ *   - 任何只想构造引擎的场景（单元测试、CI、嵌入式使用）都被迫准备假 API key
+ *   - 缺 key 时不是抛错而是静默杀掉整个进程，测试里表现为"断言数凭空变少"
+ *
+ * 凭据解析和本地文件读取是两件事，不该绑在一起。
+ */
+export function readUserMemory(): string {
+  try {
+    const p = join(homedir(), '.mythinknode', 'MYTHINKNODE.md');
+    if (!existsSync(p)) return '';
+    return readFileSync(p, 'utf-8').trim();
+  } catch { return ''; }
 }
